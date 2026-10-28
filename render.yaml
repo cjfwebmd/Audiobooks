@@ -1,0 +1,11 @@
+services:
+  - type: web
+    name: audiolivros
+    runtime: docker
+    plan: free
+    healthCheckPath: /api/saude
+    envVars:
+      - key: APP_SENHA
+        sync: false
+      - key: GEMINI_API_KEY
+        sync: false

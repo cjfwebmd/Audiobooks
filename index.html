@@ -1,0 +1,671 @@
+<!doctype html>
+<html lang="pt-BR">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Audiolivros</title>
+<meta name="theme-color" content="#2d6a4f">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-title" content="Audiolivros">
+<meta name="apple-mobile-web-app-status-bar-style" content="default">
+<link rel="manifest" href="manifest.json">
+<link rel="apple-touch-icon" href="icon-512.png">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Literata:opsz,wght@7..72,500;7..72,650&family=Figtree:wght@400;500;600&display=swap">
+<style>
+/* Layout: coluna estreita como página de livro; abas no topo, player fixo embaixo ao alcance do polegar */
+:root {
+  --bg: #f3f4f1; --surface: #ffffff; --ink: #1c2420; --muted: #5f6b65; --line: #d9ddd8;
+  --accent: #2d6a4f; --accent-ink: #ffffff; --accent-soft: #dcebe2; --danger: #a33a2b; --warn: #8a5a00;
+  --font-display: "Literata", Georgia, "Times New Roman", serif;
+  --font-body: "Figtree", system-ui, -apple-system, "Segoe UI", sans-serif;
+  color-scheme: light;
+}
+@media (prefers-color-scheme: dark) {
+  :root { --bg: #111513; --surface: #1a201d; --ink: #e8ece9; --muted: #98a59e; --line: #2c3430;
+    --accent: #6fc59a; --accent-ink: #0e1a14; --accent-soft: #1f3a2d; --danger: #f08a7a; --warn: #e2b35c; color-scheme: dark; }
+}
+* { box-sizing: border-box; }
+html, body { margin: 0; }
+body { background: var(--bg); color: var(--ink); font-family: var(--font-body); font-size: 16px; line-height: 1.45;
+  -webkit-tap-highlight-color: transparent; padding-top: env(safe-area-inset-top, 0px); }
+[hidden] { display: none !important; }
+button, input, select, textarea { font: inherit; color: inherit; }
+button { cursor: pointer; }
+:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+.wrap { max-width: 600px; margin: 0 auto; padding-left: max(16px, env(safe-area-inset-left, 0px));
+  padding-right: max(16px, env(safe-area-inset-right, 0px)); padding-block: 14px 330px;
+}
+body:has(.player[data-empty]) .wrap { padding-bottom: 40px; }
+header.top { display: flex; align-items: baseline; justify-content: space-between; gap: 12px; }
+h1 { font-family: var(--font-display); font-weight: 650; font-size: 1.6rem; margin: 0; letter-spacing: -0.01em; }
+h2 { font-family: var(--font-display); font-weight: 500; font-size: 1.15rem; margin: 0; text-wrap: balance; }
+.muted { color: var(--muted); }
+.small { font-size: 0.85rem; }
+
+.tabs { display: grid; grid-template-columns: repeat(3, 1fr); gap: 4px; background: var(--surface); border: 1px solid var(--line);
+  border-radius: 12px; padding: 4px; margin: 14px 0 18px; position: sticky; top: env(safe-area-inset-top, 0px); z-index: 4; }
+.tabs button { border: 0; background: none; padding: 9px 6px; border-radius: 9px; font-weight: 600; color: var(--muted); position: relative; }
+.tabs button[aria-selected="true"] { background: var(--accent); color: var(--accent-ink); }
+.badge { display: inline-block; min-width: 1.4em; padding: 0 5px; border-radius: 999px; background: var(--danger); color: #fff;
+  font-size: 0.72rem; line-height: 1.4em; margin-left: 4px; font-variant-numeric: tabular-nums; }
+
+section.view { display: grid; gap: 18px; }
+.card { background: var(--surface); border: 1px solid var(--line); border-radius: 14px; padding: 16px; display: grid; gap: 12px; min-width: 0; }
+.step { display: flex; gap: 10px; align-items: baseline; }
+.step b { font-family: var(--font-display); color: var(--accent); font-size: 1.05rem; }
+.row { display: flex; gap: 8px; flex-wrap: wrap; align-items: center; }
+.btn { border: 1px solid var(--line); background: var(--bg); border-radius: 10px; padding: 10px 14px; font-weight: 600; }
+.btn.primary { background: var(--accent); color: var(--accent-ink); border-color: var(--accent); }
+.btn.big { padding: 14px 16px; font-size: 1.05rem; flex: 1; }
+.btn.ghost { background: none; }
+.btn.danger { color: var(--danger); }
+.btn:disabled { opacity: .5; cursor: default; }
+label.file { display: inline-flex; align-items: center; gap: 8px; }
+label.file input { position: absolute; width: 1px; height: 1px; opacity: 0; }
+input[type=text], input[type=password], select, textarea { width: 100%; border: 1px solid var(--line); background: var(--bg);
+  border-radius: 10px; padding: 10px 12px; min-width: 0; }
+.field { display: grid; gap: 6px; }
+.field > span { font-size: 0.85rem; font-weight: 600; color: var(--muted); }
+
+.books { display: flex; gap: 8px; overflow-x: auto; padding-bottom: 2px; scrollbar-width: thin; }
+.bookchip { flex-shrink: 0; max-width: 240px; text-align: left; border: 1px solid var(--line); background: var(--bg); border-radius: 10px; padding: 8px 12px; }
+.bookchip[aria-pressed="true"] { border-color: var(--accent); background: var(--accent-soft); }
+.bookchip .t { display: block; font-weight: 600; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.bookchip .s { font-size: 0.78rem; color: var(--muted); }
+
+.toc { list-style: none; margin: 0; padding: 0; max-height: 46vh; overflow-y: auto; border: 1px solid var(--line); border-radius: 10px; }
+.toc li button { width: 100%; text-align: left; border: 0; border-bottom: 1px solid var(--line); background: none; padding: 10px 12px;
+  display: grid; grid-template-columns: 1fr auto; gap: 10px; align-items: baseline; }
+.toc li:last-child button { border-bottom: 0; }
+.toc li button .pg { color: var(--muted); font-size: 0.8rem; font-variant-numeric: tabular-nums; }
+.toc li.sub button { padding-left: 28px; font-size: 0.9rem; color: var(--muted); }
+.toc li button[aria-pressed="true"] { background: var(--accent-soft); color: var(--ink); font-weight: 600; }
+.seg { display: grid; grid-template-columns: 1fr 1fr; gap: 4px; background: var(--bg); border: 1px solid var(--line); border-radius: 10px; padding: 3px; }
+.seg button { border: 0; background: none; padding: 9px; border-radius: 8px; font-weight: 600; color: var(--muted); }
+.seg button[aria-pressed="true"] { background: var(--surface); color: var(--ink); box-shadow: 0 1px 3px rgba(0,0,0,.12); }
+.checks { display: grid; gap: 8px; }
+.checks label { display: flex; gap: 10px; align-items: flex-start; }
+.checks input { width: 20px; height: 20px; margin-top: 2px; accent-color: var(--accent); flex-shrink: 0; }
+.msg { border-radius: 10px; padding: 10px 12px; font-size: 0.92rem; }
+.msg.err { background: color-mix(in srgb, var(--danger) 14%, transparent); color: var(--ink); }
+.msg.ok { background: var(--accent-soft); }
+
+.task { display: grid; gap: 8px; }
+.task .head { display: flex; justify-content: space-between; gap: 10px; align-items: baseline; }
+.pill { font-size: 0.75rem; font-weight: 600; padding: 2px 9px; border-radius: 999px; border: 1px solid var(--line); white-space: nowrap; }
+.pill.gerando { background: var(--accent-soft); border-color: var(--accent); }
+.pill.pronta { background: var(--accent); color: var(--accent-ink); border-color: var(--accent); }
+.pill.erro { color: var(--danger); border-color: var(--danger); }
+.progress { height: 6px; border-radius: 3px; background: var(--line); overflow: hidden; }
+.progress i { display: block; height: 100%; background: var(--accent); transition: width .5s; }
+.log { font-size: 0.8rem; color: var(--muted); font-variant-numeric: tabular-nums; overflow-wrap: anywhere; }
+
+.list { list-style: none; margin: 0; padding: 0; border-top: 1px solid var(--line); }
+.item { display: grid; gap: 8px; padding: 14px 2px; border-bottom: 1px solid var(--line); }
+.item .open { text-align: left; background: none; border: 0; padding: 0; display: grid; gap: 6px; min-width: 0; }
+.item .name { font-family: var(--font-display); font-weight: 500; font-size: 1.02rem; overflow-wrap: anywhere; }
+.item.current .name { color: var(--accent); }
+.meta { display: flex; align-items: center; gap: 10px; color: var(--muted); font-size: 0.8rem; font-variant-numeric: tabular-nums; flex-wrap: wrap; }
+.bar { flex: 1; height: 4px; border-radius: 2px; background: var(--line); overflow: hidden; max-width: 140px; min-width: 60px; }
+.bar i { display: block; height: 100%; background: var(--accent); }
+.acts { display: flex; gap: 6px; flex-wrap: wrap; }
+.acts .btn { padding: 6px 10px; font-size: 0.82rem; font-weight: 500; }
+.acts a.btn { text-decoration: none; color: inherit; }
+.saved { color: var(--accent); font-weight: 600; }
+.empty { padding: 18px; border: 1px dashed var(--line); border-radius: 14px; color: var(--muted); }
+
+.player { position: fixed; left: 0; right: 0; bottom: 0; z-index: 5; background: var(--surface); border-top: 1px solid var(--line);
+  box-shadow: 0 -8px 30px rgba(0,0,0,.08); padding-top: 12px; padding-bottom: calc(12px + env(safe-area-inset-bottom, 0px));
+  padding-left: max(16px, env(safe-area-inset-left, 0px)); padding-right: max(16px, env(safe-area-inset-right, 0px)); }
+.player .in { max-width: 600px; margin: 0 auto; display: grid; gap: 8px; }
+.now { font-family: var(--font-display); font-weight: 500; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; min-width: 0; flex: 1; }
+.player .in > * { min-width: 0; }
+.player[data-empty] { display: none; }
+.times { display: flex; justify-content: space-between; font-size: 0.78rem; color: var(--muted); font-variant-numeric: tabular-nums; }
+input[type=range] { width: 100%; accent-color: var(--accent); margin: 0; height: 28px; }
+.controls { display: grid; grid-template-columns: repeat(5, 1fr); align-items: center; justify-items: center; }
+.skip { width: 54px; height: 54px; border-radius: 50%; border: 1px solid var(--line); background: var(--bg); display: grid; place-items: center;
+  font-weight: 600; font-variant-numeric: tabular-nums; font-size: 0.95rem; line-height: 1.05; }
+.skip small { display: block; font-size: 0.6rem; font-weight: 500; color: var(--muted); }
+.play { width: 68px; height: 68px; border-radius: 50%; border: 0; background: var(--accent); color: var(--accent-ink); display: grid; place-items: center; }
+.play svg { width: 28px; height: 28px; fill: currentColor; }
+.speedrow { display: grid; grid-template-columns: 42px 1fr 42px auto; align-items: center; gap: 8px; }
+.stepb { height: 38px; border-radius: 10px; border: 1px solid var(--line); background: var(--bg); font-size: 1.2rem; }
+.rate { font-weight: 600; font-variant-numeric: tabular-nums; min-width: 3.4em; text-align: right; }
+.chips { display: flex; gap: 6px; overflow-x: auto; scrollbar-width: none; }
+.chip { flex-shrink: 0; border: 1px solid var(--line); background: var(--bg); border-radius: 999px; padding: 5px 11px; font-size: 0.84rem; font-variant-numeric: tabular-nums; }
+.chip.on { background: var(--accent-soft); border-color: var(--accent); font-weight: 600; }
+.player[data-empty] .controls, .player[data-empty] .speedrow, .player[data-empty] .chips { opacity: .45; pointer-events: none; }
+.player.min .speedrow, .player.min .chips, .player.min input#seek, .player.min .times { display: none; }
+.player.min .controls { grid-template-columns: repeat(5, 1fr); }
+.minbtn { background: none; border: 0; color: var(--muted); font-size: 0.8rem; padding: 2px 6px; }
+
+dialog { border: 1px solid var(--line); border-radius: 14px; background: var(--surface); color: var(--ink); width: min(680px, 94vw); max-height: 84vh; padding: 0; }
+dialog::backdrop { background: rgba(0,0,0,.4); }
+dialog .dh { display: flex; justify-content: space-between; align-items: center; padding: 12px 16px; border-bottom: 1px solid var(--line); gap: 10px; }
+dialog pre { white-space: pre-wrap; font-family: var(--font-display); font-size: 1rem; line-height: 1.6; margin: 0; padding: 16px; overflow-y: auto; max-height: 70vh; }
+.login { max-width: 360px; margin: 18vh auto 0; display: grid; gap: 12px; }
+@media (prefers-reduced-motion: reduce) { * { transition: none !important; } }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <div id="login" class="login" hidden>
+    <h1>Audiolivros</h1>
+    <p class="muted">Digite a senha do seu app.</p>
+    <form id="loginForm" class="row">
+      <input id="senha" type="password" autocomplete="current-password" placeholder="Senha" style="flex:1">
+      <button class="btn primary">Entrar</button>
+    </form>
+    <div id="loginErr" class="msg err" hidden>Senha incorreta.</div>
+  </div>
+
+  <div id="app" hidden>
+    <header class="top">
+      <h1>Audiolivros</h1>
+      <span class="muted small" id="srv"></span>
+    </header>
+    <nav class="tabs" role="tablist">
+      <button role="tab" id="tab-novo" aria-selected="true" data-v="novo">Novo</button>
+      <button role="tab" id="tab-fila" aria-selected="false" data-v="fila">Fila <span class="badge" id="nfila" hidden>0</span></button>
+      <button role="tab" id="tab-ouvir" aria-selected="false" data-v="ouvir">Ouvir</button>
+    </nav>
+
+    <!-- NOVO -->
+    <section class="view" id="v-novo">
+      <div class="card">
+        <div class="step"><b>1</b><h2>Livro</h2></div>
+        <div class="books" id="books"></div>
+        <div class="row">
+          <label class="btn file" for="arquivo">Enviar PDF<input id="arquivo" type="file" accept=".pdf,.txt,application/pdf,text/plain"></label>
+          <button class="btn ghost" id="mostrarLink">Colar link do Drive</button>
+        </div>
+        <form class="row" id="linkForm" hidden>
+          <input id="link" type="text" inputmode="url" placeholder="https://drive.google.com/file/d/…" style="flex:1">
+          <button class="btn primary">Abrir</button>
+        </form>
+        <div id="envio" class="msg ok" hidden></div>
+        <div id="envioErr" class="msg err" hidden></div>
+      </div>
+
+      <div class="card" id="cardTrecho" hidden>
+        <div class="step"><b>2</b><h2 id="livroTitulo">Trecho</h2></div>
+        <p class="muted small" id="livroInfo"></p>
+        <div id="tocBox">
+          <div class="row" style="justify-content:space-between">
+            <span class="small muted">Toque no capítulo. Para vários, toque no primeiro e no último.</span>
+            <label class="small"><input type="checkbox" id="verSub"> seções</label>
+          </div>
+          <ul class="toc" id="toc"></ul>
+        </div>
+        <label class="field"><span>ou páginas (como no leitor de PDF)</span>
+          <input id="paginas" type="text" inputmode="numeric" placeholder="ex.: 45-78"></label>
+        <div id="escolha" class="small"></div>
+      </div>
+
+      <div class="card" id="cardVoz" hidden>
+        <div class="step"><b>3</b><h2>Voz</h2></div>
+        <div class="seg">
+          <button id="mEdge" aria-pressed="true">Edge · grátis</button>
+          <button id="mGemini" aria-pressed="false">Gemini · natural</button>
+        </div>
+        <div id="boxEdge" class="checks">
+          <label class="field"><span>Voz</span><select id="vozEdge"></select></label>
+          <label class="field"><span>Velocidade da gravação: <b id="velTxt">0%</b></span>
+            <input type="range" id="velEdge" min="-30" max="50" step="5" value="0"></label>
+        </div>
+        <div id="boxGemini" class="checks" hidden>
+          <label class="field"><span>Voz</span><select id="vozGemini"></select></label>
+          <label class="field"><span>Estilo da leitura</span>
+            <input id="estilo" type="text" value="como um narrador de audiolivro: tom natural, calmo e expressivo"></label>
+          <p class="small muted" id="geminiAviso">A cota grátis do Gemini é diária e pequena. Se acabar, a geração para e continua quando você pedir de novo.</p>
+        </div>
+        <div class="checks">
+          <label><input type="checkbox" id="oNotas" checked> Tirar notas de rodapé</label>
+          <label><input type="checkbox" id="oBiblia" checked> Ler referências bíblicas por extenso</label>
+          <label><input type="checkbox" id="oRefs" checked> Pular a bibliografia do fim do capítulo</label>
+          <label id="lRevisar"><input type="checkbox" id="oRevisar"> Revisar o texto com o Gemini antes</label>
+        </div>
+        <div class="row">
+          <button class="btn ghost" id="verTexto">Ver texto primeiro</button>
+          <button class="btn primary big" id="gerar">Gerar áudio</button>
+        </div>
+        <div id="gerarErr" class="msg err" hidden></div>
+      </div>
+    </section>
+
+    <!-- FILA -->
+    <section class="view" id="v-fila" hidden>
+      <p class="muted small">Pode bloquear o celular ou fechar o app: a geração continua no servidor.</p>
+      <div id="tarefas" class="view"></div>
+    </section>
+
+    <!-- OUVIR -->
+    <section class="view" id="v-ouvir" hidden>
+      <ul class="list" id="lista"></ul>
+      <div class="empty" id="vazio" hidden>Nenhum áudio ainda. Gere o primeiro na aba Novo.</div>
+      <p class="small muted">“Guardar no celular” deixa o áudio disponível sem internet. O lugar onde você parou e a velocidade são lembrados.</p>
+    </section>
+  </div>
+</div>
+
+<section class="player" id="player" data-empty aria-label="Player">
+  <div class="in">
+    <div class="row" style="justify-content:space-between;flex-wrap:nowrap">
+      <div class="now" id="now">Escolha um áudio na aba Ouvir</div>
+      <button class="minbtn" id="minimizar" aria-label="Recolher player">▾</button>
+    </div>
+    <input type="range" id="seek" min="0" max="1000" value="0" step="1" aria-label="Posição">
+    <div class="times"><span id="cur">0:00</span><span id="left">−0:00</span></div>
+    <div class="controls">
+      <button class="skip" id="b10" aria-label="Voltar 10 segundos">−10<small>seg</small></button>
+      <button class="skip" id="b5" aria-label="Voltar 5 segundos">−5<small>seg</small></button>
+      <button class="play" id="play" aria-label="Tocar"><svg viewBox="0 0 24 24" id="ico"><path d="M8 5v14l11-7z"/></svg></button>
+      <button class="skip" id="f5" aria-label="Avançar 5 segundos">+5<small>seg</small></button>
+      <button class="skip" id="f10" aria-label="Avançar 10 segundos">+10<small>seg</small></button>
+    </div>
+    <div class="speedrow">
+      <button class="stepb" id="slow" aria-label="Diminuir velocidade">−</button>
+      <input type="range" id="speed" min="0.5" max="3" step="0.05" value="1" aria-label="Velocidade">
+      <button class="stepb" id="fast" aria-label="Aumentar velocidade">+</button>
+      <span class="rate" id="rate">1,00×</span>
+    </div>
+    <div class="chips" id="chips"></div>
+  </div>
+</section>
+<audio id="audio" preload="metadata"></audio>
+
+<dialog id="dlg">
+  <div class="dh"><h2 id="dlgT">Texto</h2><button class="btn" id="dlgX">Fechar</button></div>
+  <pre id="dlgP"></pre>
+</dialog>
+
+<script>
+(() => {
+  const $ = id => document.getElementById(id);
+  const pref = (k, v) => { try { if (v === undefined) return localStorage.getItem(k); localStorage.setItem(k, v); } catch (e) { return null; } };
+  let senha = pref("senha") || "";
+  let estado = { livro: null, info: null, sel: [], motor: "edge", gemini: false };
+
+  // ---------------- API ----------------
+  async function api(path, opt = {}) {
+    opt.headers = Object.assign({ "x-senha": senha }, opt.headers || {});
+    const r = await fetch(path, opt);
+    if (r.status === 401) { mostrarLogin(true); throw new Error("senha"); }
+    const j = await r.json().catch(() => ({}));
+    if (!r.ok) throw new Error(j.erro || ("Erro " + r.status));
+    return j;
+  }
+  const urlAudio = (nome, extra = "") => "api/audios/" + encodeURIComponent(nome) + "?s=" + encodeURIComponent(senha) + extra;
+
+  function mostrarLogin(erro) { $("app").hidden = true; $("login").hidden = false; $("loginErr").hidden = !erro; $("senha").focus(); }
+  $("loginForm").onsubmit = async e => { e.preventDefault(); senha = $("senha").value; pref("senha", senha); iniciar(); };
+
+  // ---------------- abas ----------------
+  function aba(v) {
+    document.querySelectorAll(".tabs button").forEach(b => b.setAttribute("aria-selected", b.dataset.v === v));
+    ["novo", "fila", "ouvir"].forEach(x => $("v-" + x).hidden = x !== v);
+    pref("aba", v);
+    if (v === "fila") carregarTarefas();
+    if (v === "ouvir") carregarAudios();
+  }
+  document.querySelectorAll(".tabs button").forEach(b => b.onclick = () => aba(b.dataset.v));
+
+  // ---------------- livros ----------------
+  async function carregarLivros(selecionar) {
+    const lista = await api("api/livros");
+    const box = $("books"); box.innerHTML = "";
+    lista.forEach(l => {
+      const b = document.createElement("button");
+      b.className = "bookchip"; b.setAttribute("aria-pressed", estado.livro === l.id);
+      b.innerHTML = `<span class="t"></span><span class="s"></span>`;
+      b.querySelector(".t").textContent = l.nome.replace(/\.(pdf|txt)$/i, "").replace(/_/g, " ");
+      b.querySelector(".s").textContent = "enviado " + new Date(l.quando * 1000).toLocaleDateString("pt-BR");
+      b.onclick = () => abrirLivro(l.id);
+      box.appendChild(b);
+    });
+    box.hidden = !lista.length;
+    if (selecionar) abrirLivro(selecionar);
+    else if (!estado.livro && lista.length && pref("livro")) { if (lista.some(l => l.id === pref("livro"))) abrirLivro(pref("livro")); }
+  }
+
+  async function abrirLivro(id) {
+    estado.livro = id; estado.sel = []; pref("livro", id);
+    document.querySelectorAll(".bookchip").forEach((b, i) => b.setAttribute("aria-pressed", false));
+    $("envioErr").hidden = true;
+    $("livroTitulo").textContent = "Carregando…"; $("cardTrecho").hidden = false;
+    try {
+      const info = await api("api/livros/" + id);
+      estado.info = info;
+      [...$("books").children].forEach(b => b.setAttribute("aria-pressed", b.querySelector(".t").textContent === info.nome.replace(/\.(pdf|txt)$/i, "").replace(/_/g, " ")));
+      $("livroTitulo").textContent = info.nome.replace(/\.(pdf|txt)$/i, "").replace(/_/g, " ");
+      if (info.tipo === "txt") {
+        $("livroInfo").textContent = "Arquivo de texto: o áudio usa o texto inteiro.";
+        $("tocBox").hidden = true; $("paginas").parentElement.hidden = true;
+      } else if (!info.tem_texto) {
+        $("livroInfo").textContent = "Este PDF é só imagem (digitalizado) e precisa de OCR antes. Não dá para ler o texto dele.";
+        $("tocBox").hidden = true; $("paginas").parentElement.hidden = true;
+      } else {
+        $("paginas").parentElement.hidden = false;
+        $("livroInfo").textContent = `${info.paginas} páginas` + (info.sumario.length ? "" : " · sem sumário: use as páginas");
+        $("tocBox").hidden = !info.sumario.length;
+        desenharToc();
+      }
+      $("cardVoz").hidden = false;
+      atualizarEscolha();
+    } catch (e) { $("livroTitulo").textContent = "Trecho"; $("envioErr").textContent = e.message; $("envioErr").hidden = false; }
+  }
+
+  function desenharToc() {
+    const ver = $("verSub").checked, ul = $("toc"); ul.innerHTML = "";
+    const [a, b] = estado.sel;
+    estado.info.sumario.forEach(it => {
+      if (!it.principal && !ver) return;
+      const li = document.createElement("li"); if (!it.principal) li.className = "sub";
+      const bt = document.createElement("button");
+      const dentro = a && (b ? it.n >= Math.min(a, b) && it.n <= Math.max(a, b) && it.principal : it.n === a);
+      bt.setAttribute("aria-pressed", !!(dentro || it.n === a || it.n === b));
+      bt.innerHTML = `<span></span><span class="pg">p. ${it.pagina}</span>`;
+      bt.firstChild.textContent = it.titulo;
+      bt.onclick = () => {
+        $("paginas").value = "";
+        if (!estado.sel.length || estado.sel.length === 2) estado.sel = [it.n];
+        else if (estado.sel[0] === it.n) estado.sel = [];
+        else estado.sel = [estado.sel[0], it.n].sort((x, y) => x - y);
+        desenharToc(); atualizarEscolha();
+      };
+      li.appendChild(bt); ul.appendChild(li);
+    });
+  }
+  $("verSub").onchange = desenharToc;
+  $("paginas").oninput = () => { if ($("paginas").value.trim()) { estado.sel = []; desenharToc(); } atualizarEscolha(); };
+
+  function rotulo() {
+    const info = estado.info; if (!info) return "";
+    if (info.tipo === "txt") return info.nome.replace(/\.txt$/i, "");
+    if ($("paginas").value.trim()) return "Páginas " + $("paginas").value.trim();
+    const t = n => info.sumario.find(x => x.n === n)?.titulo || n;
+    if (estado.sel.length === 1) return t(estado.sel[0]);
+    if (estado.sel.length === 2) return t(estado.sel[0]) + " até " + t(estado.sel[1]);
+    return "";
+  }
+  function atualizarEscolha() {
+    const r = rotulo();
+    $("escolha").innerHTML = r ? "Vai ler: <b></b>" : '<span class="muted">Nada escolhido ainda.</span>';
+    if (r) $("escolha").querySelector("b").textContent = r;
+  }
+
+  async function enviar(form) {
+    $("envioErr").hidden = true; $("envio").hidden = false;
+    $("envio").textContent = "Enviando e lendo o sumário…";
+    try {
+      const info = await api("api/livros", form);
+      $("envio").hidden = true; $("linkForm").hidden = true; $("link").value = "";
+      await carregarLivros(info.id);
+    } catch (e) { $("envio").hidden = true; $("envioErr").textContent = e.message; $("envioErr").hidden = false; }
+  }
+  $("arquivo").onchange = e => {
+    const f = e.target.files[0]; e.target.value = ""; if (!f) return;
+    const fd = new FormData(); fd.append("arquivo", f, f.name);
+    $("envio").textContent = `Enviando ${(f.size / 1048576).toFixed(1).replace(".", ",")} MB…`;
+    enviar({ method: "POST", body: fd });
+  };
+  $("mostrarLink").onclick = () => { $("linkForm").hidden = !$("linkForm").hidden; if (!$("linkForm").hidden) $("link").focus(); };
+  $("linkForm").onsubmit = e => { e.preventDefault(); enviar({ method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ link: $("link").value }) }); };
+
+  // ---------------- voz ----------------
+  function setMotor(m) {
+    if (m === "gemini" && !estado.gemini) return;
+    estado.motor = m; pref("motor", m);
+    $("mEdge").setAttribute("aria-pressed", m === "edge"); $("mGemini").setAttribute("aria-pressed", m === "gemini");
+    $("boxEdge").hidden = m !== "edge"; $("boxGemini").hidden = m !== "gemini";
+  }
+  $("mEdge").onclick = () => setMotor("edge"); $("mGemini").onclick = () => setMotor("gemini");
+  $("velEdge").oninput = () => { $("velTxt").textContent = ($("velEdge").value > 0 ? "+" : "") + $("velEdge").value + "%"; };
+  ["vozEdge", "vozGemini", "estilo"].forEach(id => $(id).addEventListener("change", () => pref(id, $(id).value)));
+
+  async function carregarVozes() {
+    const v = await api("api/vozes");
+    estado.gemini = v.gemini_disponivel;
+    const preenche = (sel, lista, padrao) => {
+      sel.innerHTML = ""; lista.forEach(n => { const o = document.createElement("option"); o.value = n; o.textContent = n.replace(/^pt-BR-/, "").replace(/Neural$/, ""); sel.appendChild(o); });
+      sel.value = pref(sel.id) && lista.includes(pref(sel.id)) ? pref(sel.id) : padrao;
+    };
+    preenche($("vozEdge"), v.edge, v.edge.includes("pt-BR-ThalitaMultilingualNeural") ? "pt-BR-ThalitaMultilingualNeural" : "pt-BR-FranciscaNeural");
+    preenche($("vozGemini"), v.gemini, "Charon");
+    if (pref("estilo")) $("estilo").value = pref("estilo");
+    $("mGemini").disabled = !estado.gemini;
+    $("lRevisar").hidden = !estado.gemini;
+    if (!estado.gemini) $("mGemini").title = "Coloque a chave GEMINI_API_KEY nas configurações do Space";
+    setMotor(estado.gemini && pref("motor") === "gemini" ? "gemini" : "edge");
+  }
+
+  async function pedir(soTexto) {
+    $("gerarErr").hidden = true;
+    const info = estado.info;
+    if (!info) return;
+    let capitulo = "";
+    if (info.tipo !== "txt" && !$("paginas").value.trim()) {
+      if (!estado.sel.length) { $("gerarErr").textContent = "Escolha um capítulo ou escreva as páginas."; $("gerarErr").hidden = false; return; }
+      capitulo = estado.sel.length === 2 ? `${estado.sel[0]}-${estado.sel[1]}` : String(estado.sel[0]);
+    }
+    const corpo = {
+      livro: estado.livro, capitulo, paginas: $("paginas").value.trim(), rotulo: rotulo(), motor: estado.motor,
+      voz_edge: $("vozEdge").value, velocidade_edge: Number($("velEdge").value), voz_gemini: $("vozGemini").value,
+      estilo_gemini: $("estilo").value, remover_notas: $("oNotas").checked, biblia: $("oBiblia").checked,
+      sem_referencias: $("oRefs").checked, revisar: $("oRevisar").checked && estado.gemini, so_texto: soTexto
+    };
+    try {
+      await api("api/tarefas", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(corpo) });
+      aba("fila");
+    } catch (e) { $("gerarErr").textContent = e.message; $("gerarErr").hidden = false; }
+  }
+  $("gerar").onclick = () => pedir(false);
+  $("verTexto").onclick = () => pedir(true);
+
+  // ---------------- fila ----------------
+  let timerFila = null;
+  const fmtMin = s => s < 60 ? "menos de 1 min" : `uns ${Math.round(s / 60)} min`;
+  async function carregarTarefas() {
+    let lista = [];
+    try { lista = await api("api/tarefas"); } catch (e) { return; }
+    const ativas = lista.filter(t => t.estado === "gerando" || t.estado === "na fila").length;
+    $("nfila").hidden = !ativas; $("nfila").textContent = ativas;
+    const box = $("tarefas"); box.innerHTML = "";
+    if (!lista.length) box.innerHTML = '<div class="empty">Nada na fila. Escolha um livro e um capítulo na aba Novo.</div>';
+    lista.forEach(t => {
+      const c = document.createElement("div"); c.className = "card task";
+      const pct = Math.round((t.progresso || 0) * 100);
+      c.innerHTML = `<div class="head"><h2></h2><span class="pill ${t.estado}">${t.estado === "pronta" ? (t.so_texto ? "texto pronto" : "pronta") : t.estado}</span></div>
+        <div class="muted small livro"></div>
+        ${t.estado === "gerando" ? `<div class="progress"><i style="width:${pct}%"></i></div><div class="log"></div>` : ""}
+        ${t.estado === "erro" ? `<div class="msg err"></div>` : ""}
+        <div class="acts"></div>`;
+      c.querySelector("h2").textContent = t.rotulo;
+      c.querySelector(".livro").textContent = t.livro.replace(/\.(pdf|txt)$/i, "").replace(/_/g, " ");
+      if (t.estado === "gerando") {
+        const reg = (t.registro || []).filter(l => !/^[│─]/.test(l));
+        c.querySelector(".log").textContent = (pct ? `${pct}%` + (t.restante ? ` · falta ${fmtMin(t.restante)}` : "") + " · " : "") + (reg[reg.length - 1] || "começando…");
+      }
+      if (t.estado === "erro") c.querySelector(".msg").textContent = t.erro || "Não foi possível gerar.";
+      const acts = c.querySelector(".acts");
+      const add = (txt, fn, cls = "btn") => { const b = document.createElement("button"); b.className = cls; b.textContent = txt; b.onclick = fn; acts.appendChild(b); };
+      if (t.estado === "pronta" && t.arquivo) {
+        if (t.arquivo.endsWith(".mp3")) add("Ouvir", () => { aba("ouvir"); tocarServidor(t.arquivo, true); }, "btn primary");
+        else add("Ver texto", () => verTexto(t.arquivo), "btn primary");
+      }
+      if (t.estado === "na fila") add("Cancelar", async () => { await api("api/tarefas/" + t.id, { method: "DELETE" }); carregarTarefas(); }, "btn danger");
+      if (["pronta", "erro", "cancelada"].includes(t.estado)) add("Tirar da lista", async () => { await api("api/tarefas/" + t.id, { method: "DELETE" }); carregarTarefas(); }, "btn ghost");
+      box.appendChild(c);
+    });
+    clearTimeout(timerFila);
+    if (ativas) timerFila = setTimeout(carregarTarefas, $("v-fila").hidden ? 10000 : 3000);
+  }
+
+  async function verTexto(nome) {
+    $("dlgT").textContent = nome.replace(/\.txt$/, "").replace(/_/g, " ");
+    $("dlgP").textContent = "Carregando…"; $("dlg").showModal();
+    const r = await fetch(urlAudio(nome)); $("dlgP").textContent = await r.text();
+  }
+  $("dlgX").onclick = () => $("dlg").close();
+
+  // ---------------- armazenamento no aparelho ----------------
+  let dbp = null;
+  function db() {
+    if (dbp) return dbp;
+    dbp = new Promise((res, rej) => {
+      try { const r = indexedDB.open("audiolivros", 1);
+        r.onupgradeneeded = () => { r.result.createObjectStore("files"); r.result.createObjectStore("meta", { keyPath: "id" }); };
+        r.onsuccess = () => res(r.result); r.onerror = () => rej(r.error);
+      } catch (e) { rej(e); }
+    });
+    return dbp;
+  }
+  async function tx(store, mode, fn) {
+    const d = await db();
+    return new Promise((res, rej) => { const t = d.transaction(store, mode), s = t.objectStore(store); let out;
+      const r = fn(s); if (r) r.onsuccess = () => out = r.result; t.oncomplete = () => res(out); t.onerror = () => rej(t.error); });
+  }
+  const pos = {};   // nome -> {pos, dur, rate}
+  try { Object.assign(pos, JSON.parse(pref("posicoes") || "{}")); } catch (e) {}
+  const salvarPos = () => pref("posicoes", JSON.stringify(pos));
+
+  // ---------------- lista "Ouvir" ----------------
+  let audiosServidor = [], locais = new Set();
+  const limpo = n => n.replace(/\.(mp3|m4a|wav)$/i, "").replace(/_/g, " ");
+  const fmt = s => { if (!isFinite(s) || s < 0) s = 0; s = Math.round(s); const h = Math.floor(s / 3600), m = Math.floor(s % 3600 / 60), ss = String(s % 60).padStart(2, "0"); return h ? `${h}:${String(m).padStart(2, "0")}:${ss}` : `${m}:${ss}`; };
+  const fmtRate = r => r.toFixed(2).replace(".", ",") + "×";
+
+  async function carregarAudios() {
+    try { audiosServidor = await api("api/audios"); } catch (e) { audiosServidor = []; }
+    try { locais = new Set((await tx("meta", "readonly", s => s.getAllKeys())) || []); } catch (e) { locais = new Set(); }
+    desenharLista();
+  }
+  function desenharLista() {
+    const ul = $("lista"); ul.innerHTML = "";
+    const nomes = new Map(); audiosServidor.forEach(a => nomes.set(a.nome, a));
+    locais.forEach(n => { if (!nomes.has(n)) nomes.set(n, { nome: n, soLocal: true }); });
+    $("vazio").hidden = nomes.size > 0;
+    nomes.forEach(a => {
+      const p = pos[a.nome] || {}; const pct = p.dur ? Math.min(100, p.pos / p.dur * 100) : 0;
+      const li = document.createElement("li"); li.className = "item" + (atual === a.nome ? " current" : "");
+      li.innerHTML = `<button class="open"><span class="name"></span><span class="meta"><span class="bar"><i style="width:${pct.toFixed(1)}%"></i></span>
+        <span>${p.dur ? (pct >= 99 ? "concluído" : fmt(p.dur - p.pos) + " restantes") : "não iniciado"}</span>
+        ${a.tamanho ? `<span>${(a.tamanho / 1048576).toFixed(0)} MB</span>` : ""}
+        ${locais.has(a.nome) ? '<span class="saved">no celular</span>' : ""}</span></button><div class="acts"></div>`;
+      li.querySelector(".name").textContent = limpo(a.nome);
+      li.querySelector(".open").onclick = () => tocarServidor(a.nome, true);
+      const acts = li.querySelector(".acts");
+      const add = (txt, fn, cls = "btn") => { const b = document.createElement("button"); b.className = cls; b.textContent = txt; b.onclick = () => fn(b); acts.appendChild(b); return b; };
+      if (!a.soLocal && !locais.has(a.nome)) add("Guardar no celular", async b => {
+        b.disabled = true; b.textContent = "Baixando…";
+        try { const r = await fetch(urlAudio(a.nome)); const blob = await r.blob();
+          await tx("files", "readwrite", s => s.put(blob, a.nome)); await tx("meta", "readwrite", s => s.put({ id: a.nome }));
+          locais.add(a.nome); desenharLista();
+        } catch (e) { b.textContent = "Sem espaço ou sem internet"; }
+      });
+      if (locais.has(a.nome)) add("Tirar do celular", async () => { await tx("files", "readwrite", s => s.delete(a.nome)); await tx("meta", "readwrite", s => s.delete(a.nome)); locais.delete(a.nome); desenharLista(); }, "btn ghost");
+      if (!a.soLocal) {
+        const link = document.createElement("a"); link.className = "btn"; link.textContent = "Baixar MP3"; link.href = urlAudio(a.nome, "&baixar=1"); acts.appendChild(link);
+        if (a.tem_texto) add("Texto", () => verTexto(a.nome.replace(/\.mp3$/, ".txt")), "btn ghost");
+        const del = add("Apagar", async b => {
+          if (!b.dataset.ok) { b.dataset.ok = 1; b.textContent = "Confirmar"; setTimeout(() => { delete b.dataset.ok; b.textContent = "Apagar"; }, 3000); return; }
+          await api("api/audios/" + encodeURIComponent(a.nome), { method: "DELETE" }); carregarAudios();
+        }, "btn danger ghost");
+      }
+      ul.appendChild(li);
+    });
+  }
+
+  // ---------------- player ----------------
+  const audio = $("audio"); let atual = null, blobUrl = null;
+  async function tocarServidor(nome, auto) {
+    if (atual === nome) { if (auto) toggle(); return; }
+    salvarAgora();
+    let src = null;
+    if (locais.has(nome)) { try { const b = await tx("files", "readonly", s => s.get(nome)); if (b) { if (blobUrl) URL.revokeObjectURL(blobUrl); src = blobUrl = URL.createObjectURL(b); } } catch (e) {} }
+    if (!src) src = urlAudio(nome);
+    atual = nome; pref("ultimo", nome);
+    audio.src = src; audio.preservesPitch = true; audio.webkitPreservesPitch = true;
+    $("now").textContent = limpo(nome); $("player").removeAttribute("data-empty");
+    audio.addEventListener("loadedmetadata", () => {
+      const p = pos[nome]; if (p && p.pos && p.pos < audio.duration - 3) audio.currentTime = p.pos;
+      setRate((p && p.rate) || Number(pref("vel")) || 1);
+      pos[nome] = Object.assign(pos[nome] || { pos: 0 }, { dur: audio.duration }); salvarPos();
+      if (auto) audio.play().catch(() => {});
+      atualizarTempos();
+    }, { once: true });
+    if (auto) audio.play().catch(() => {});
+    mediaSession(nome); desenharLista();
+  }
+  function toggle() { if (!atual) return; audio.paused ? audio.play().catch(() => {}) : audio.pause(); }
+  function pular(s) { if (!atual) return; audio.currentTime = Math.max(0, Math.min((audio.duration || 0) - 0.5, audio.currentTime + s)); atualizarTempos(); }
+  function setRate(r) {
+    r = Math.round(Math.max(0.5, Math.min(3, r)) * 20) / 20;
+    audio.playbackRate = r; audio.defaultPlaybackRate = r; $("speed").value = r; $("rate").textContent = fmtRate(r);
+    document.querySelectorAll(".chip[data-r]").forEach(c => c.classList.toggle("on", Number(c.dataset.r) === r));
+    pref("vel", String(r)); if (atual) { pos[atual] = Object.assign(pos[atual] || {}, { rate: r }); salvarPos(); }
+    atualizarTempos();
+  }
+  let ultimoSalvo = 0;
+  function salvarAgora() { if (atual && audio.currentTime > 0) { pos[atual] = Object.assign(pos[atual] || {}, { pos: audio.currentTime, dur: audio.duration || (pos[atual] || {}).dur }); salvarPos(); } }
+  let arrastando = false;
+  function atualizarTempos() {
+    const d = audio.duration || 0, t = audio.currentTime || 0, r = audio.playbackRate || 1;
+    $("cur").textContent = fmt(t); $("left").textContent = "−" + fmt((d - t) / r) + (r !== 1 ? " a " + fmtRate(r) : "");
+    if (!arrastando) $("seek").value = d ? Math.round(t / d * 1000) : 0;
+    if ("mediaSession" in navigator && d && navigator.mediaSession.setPositionState) { try { navigator.mediaSession.setPositionState({ duration: d, position: Math.min(t, d), playbackRate: r }); } catch (e) {} }
+  }
+  function mediaSession(nome) {
+    if (!("mediaSession" in navigator)) return;
+    try { navigator.mediaSession.metadata = new MediaMetadata({ title: limpo(nome), artist: "Audiolivros" });
+      const ms = navigator.mediaSession;
+      ms.setActionHandler("play", () => audio.play()); ms.setActionHandler("pause", () => audio.pause());
+      ms.setActionHandler("seekbackward", e => pular(-(e.seekOffset || 10))); ms.setActionHandler("seekforward", e => pular(e.seekOffset || 10));
+      ms.setActionHandler("seekto", e => { audio.currentTime = e.seekTime; atualizarTempos(); });
+      try { ms.setActionHandler("previoustrack", () => pular(-10)); ms.setActionHandler("nexttrack", () => pular(10)); } catch (e) {}
+    } catch (e) {}
+  }
+  [1, 1.25, 1.5, 1.75, 2, 2.25, 2.5, 3].forEach(r => { const b = document.createElement("button"); b.className = "chip"; b.dataset.r = r; b.textContent = fmtRate(r).replace(",00", ""); b.onclick = () => setRate(r); $("chips").appendChild(b); });
+  const SONO = [0, 15, 30, 45, 60]; let sonoI = 0, sonoT = null, sonoFim = 0;
+  const sb = document.createElement("button"); sb.className = "chip"; sb.style.marginLeft = "auto"; sb.textContent = "Timer"; $("chips").appendChild(sb);
+  sb.onclick = () => { sonoI = (sonoI + 1) % SONO.length; clearInterval(sonoT); const m = SONO[sonoI];
+    if (!m) { sb.textContent = "Timer"; sb.classList.remove("on"); return; }
+    sonoFim = Date.now() + m * 60000; sb.classList.add("on");
+    const tick = () => { const l = sonoFim - Date.now(); if (l <= 0) { audio.pause(); clearInterval(sonoT); sonoI = 0; sb.textContent = "Timer"; sb.classList.remove("on"); return; } sb.textContent = "Dormir " + Math.ceil(l / 60000) + " min"; };
+    tick(); sonoT = setInterval(tick, 15000); };
+  $("play").onclick = toggle; $("b10").onclick = () => pular(-10); $("b5").onclick = () => pular(-5); $("f5").onclick = () => pular(5); $("f10").onclick = () => pular(10);
+  $("slow").onclick = () => setRate(audio.playbackRate - 0.1); $("fast").onclick = () => setRate(audio.playbackRate + 0.1);
+  $("speed").oninput = e => setRate(Number(e.target.value));
+  $("seek").addEventListener("input", e => { arrastando = true; $("cur").textContent = fmt((audio.duration || 0) * e.target.value / 1000); });
+  $("seek").addEventListener("change", e => { arrastando = false; if (audio.duration) audio.currentTime = audio.duration * e.target.value / 1000; atualizarTempos(); salvarAgora(); });
+  $("minimizar").onclick = () => { const m = $("player").classList.toggle("min"); $("minimizar").textContent = m ? "▴" : "▾"; pref("min", m ? "1" : ""); };
+  if (pref("min")) { $("player").classList.add("min"); $("minimizar").textContent = "▴"; }
+  const PLAY = '<path d="M8 5v14l11-7z"/>', PAUSE = '<path d="M6 5h4v14H6zM14 5h4v14h-4z"/>';
+  audio.addEventListener("play", () => { $("ico").innerHTML = PAUSE; $("play").setAttribute("aria-label", "Pausar"); });
+  audio.addEventListener("pause", () => { $("ico").innerHTML = PLAY; $("play").setAttribute("aria-label", "Tocar"); salvarAgora(); if (!$("v-ouvir").hidden) desenharLista(); });
+  audio.addEventListener("timeupdate", () => { atualizarTempos(); if (Date.now() - ultimoSalvo > 5000) { ultimoSalvo = Date.now(); salvarAgora(); } });
+  audio.addEventListener("ended", () => { salvarAgora(); desenharLista(); });
+  document.addEventListener("visibilitychange", () => { if (document.hidden) salvarAgora(); else if (!$("app").hidden) carregarTarefas(); });
+
+  // ---------------- início ----------------
+  async function iniciar() {
+    try {
+      const st = await api("api/status");
+      $("login").hidden = true; $("app").hidden = false;
+      setRate(Number(pref("vel")) || 1);
+      await Promise.all([carregarVozes(), carregarLivros(), carregarTarefas(), carregarAudios()]);
+      const a = pref("aba"); if (a) aba(a);
+      if (pref("ultimo") && (audiosServidor.some(x => x.nome === pref("ultimo")) || locais.has(pref("ultimo")))) tocarServidor(pref("ultimo"), false);
+    } catch (e) {
+      if (e.message !== "senha") { $("app").hidden = false; $("srv").textContent = "servidor acordando… tente em 30 s"; setTimeout(iniciar, 8000); }
+    }
+  }
+  if ("serviceWorker" in navigator) { try { navigator.serviceWorker.register("sw.js").catch(() => {}); } catch (e) {} }
+  iniciar();
+})();
+</script>
+</body>
+</html>
