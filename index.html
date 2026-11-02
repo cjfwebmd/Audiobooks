@@ -91,6 +91,7 @@ input[type=text], input[type=password], select, textarea { width: 100%; border: 
 .msg { border-radius: 10px; padding: 10px 12px; font-size: 0.92rem; }
 .msg.err { background: color-mix(in srgb, var(--danger) 14%, transparent); color: var(--ink); }
 .msg.ok { background: var(--accent-soft); }
+.msg.pausa { background: color-mix(in srgb, var(--warn) 12%, transparent); }
 
 .task { display: grid; gap: 8px; }
 .task .head { display: flex; justify-content: space-between; gap: 10px; align-items: baseline; }
@@ -100,6 +101,10 @@ input[type=text], input[type=password], select, textarea { width: 100%; border: 
 .pill.erro { color: var(--danger); border-color: var(--danger); }
 .progress { height: 6px; border-radius: 3px; background: var(--line); overflow: hidden; }
 .progress i { display: block; height: 100%; background: var(--accent); transition: width .5s; }
+.partes { display: flex; flex-wrap: wrap; gap: 3px; }
+.partes i { width: 14px; height: 14px; border-radius: 3px; background: var(--line); }
+.partes i.ok { background: var(--accent); }
+.pill.pausada { color: var(--warn); border-color: var(--warn); }
 .log { font-size: 0.8rem; color: var(--muted); font-variant-numeric: tabular-nums; overflow-wrap: anywhere; }
 
 .list { list-style: none; margin: 0; padding: 0; border-top: 1px solid var(--line); }
@@ -220,7 +225,11 @@ dialog pre { white-space: pre-wrap; font-family: var(--font-display); font-size:
           <label class="field"><span>Voz</span><select id="vozGemini"></select></label>
           <label class="field"><span>Estilo da leitura</span>
             <input id="estilo" type="text" value="como um narrador de audiolivro: tom natural, calmo e expressivo"></label>
-          <p class="small muted" id="geminiAviso">A cota grátis do Gemini é diária e pequena. Se acabar, a geração para e continua quando você pedir de novo.</p>
+          <label class="field"><span id="chaveRotulo">Chave do Gemini</span>
+            <input id="chave" type="password" autocomplete="off" placeholder="cole a chave do aistudio.google.com/apikey"></label>
+          <p class="small muted" id="chaveInfo">A chave fica guardada só neste celular.</p>
+          <label class="small"><input type="checkbox" id="oCompletar"> Se a cota do Gemini acabar, completar o resto com a voz Edge</label>
+          <p class="small muted" id="geminiAviso">Se a cota acabar, as partes prontas ficam guardadas e você continua depois pela aba Fila, sem refazer nada.</p>
         </div>
         <div class="checks">
           <label><input type="checkbox" id="oNotas" checked> Tirar notas de rodapé</label>
@@ -417,7 +426,6 @@ dialog pre { white-space: pre-wrap; font-family: var(--font-display); font-size:
 
   // ---------------- voz ----------------
   function setMotor(m) {
-    if (m === "gemini" && !estado.gemini) return;
     estado.motor = m; pref("motor", m);
     $("mEdge").setAttribute("aria-pressed", m === "edge"); $("mGemini").setAttribute("aria-pressed", m === "gemini");
     $("boxEdge").hidden = m !== "edge"; $("boxGemini").hidden = m !== "gemini";
@@ -425,6 +433,8 @@ dialog pre { white-space: pre-wrap; font-family: var(--font-display); font-size:
   $("mEdge").onclick = () => setMotor("edge"); $("mGemini").onclick = () => setMotor("gemini");
   $("velEdge").oninput = () => { $("velTxt").textContent = ($("velEdge").value > 0 ? "+" : "") + $("velEdge").value + "%"; };
   ["vozEdge", "vozGemini", "estilo"].forEach(id => $(id).addEventListener("change", () => pref(id, $(id).value)));
+  $("chave").addEventListener("change", () => pref("chave", $("chave").value.trim()));
+  $("oCompletar").addEventListener("change", () => pref("completar", $("oCompletar").checked ? "1" : ""));
 
   async function carregarVozes() {
     const v = await api("api/vozes");
@@ -436,10 +446,11 @@ dialog pre { white-space: pre-wrap; font-family: var(--font-display); font-size:
     preenche($("vozEdge"), v.edge, v.edge.includes("pt-BR-ThalitaMultilingualNeural") ? "pt-BR-ThalitaMultilingualNeural" : "pt-BR-FranciscaNeural");
     preenche($("vozGemini"), v.gemini, "Charon");
     if (pref("estilo")) $("estilo").value = pref("estilo");
-    $("mGemini").disabled = !estado.gemini;
-    $("lRevisar").hidden = !estado.gemini;
-    if (!estado.gemini) $("mGemini").title = "Coloque a chave GEMINI_API_KEY nas configurações do Space";
-    setMotor(estado.gemini && pref("motor") === "gemini" ? "gemini" : "edge");
+    estado.chaveServidor = !!v.gemini_no_servidor;
+    $("chave").value = pref("chave") || "";
+    $("chaveRotulo").textContent = estado.chaveServidor ? "Chave do Gemini (opcional: o servidor já tem uma)" : "Chave do Gemini";
+    $("oCompletar").checked = pref("completar") === "1";
+    setMotor(pref("motor") === "gemini" ? "gemini" : "edge");
   }
 
   async function pedir(soTexto) {
@@ -455,8 +466,12 @@ dialog pre { white-space: pre-wrap; font-family: var(--font-display); font-size:
       livro: estado.livro, capitulo, paginas: $("paginas").value.trim(), rotulo: rotulo(), motor: estado.motor,
       voz_edge: $("vozEdge").value, velocidade_edge: Number($("velEdge").value), voz_gemini: $("vozGemini").value,
       estilo_gemini: $("estilo").value, remover_notas: $("oNotas").checked, biblia: $("oBiblia").checked,
-      sem_referencias: $("oRefs").checked, revisar: $("oRevisar").checked && estado.gemini, so_texto: soTexto
+      sem_referencias: $("oRefs").checked, revisar: $("oRevisar").checked && (estado.chaveServidor || !!$("chave").value.trim()),
+      so_texto: soTexto, gemini_chave: $("chave").value.trim(), completar_com_edge: $("oCompletar").checked
     };
+    if ((corpo.motor === "gemini" || corpo.revisar) && !corpo.gemini_chave && !estado.chaveServidor) {
+      $("gerarErr").textContent = "Cole a chave do Gemini no campo acima (ou escolha a voz Edge)."; $("gerarErr").hidden = false; return;
+    }
     try {
       await api("api/tarefas", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(corpo) });
       aba("fila");
@@ -472,7 +487,8 @@ dialog pre { white-space: pre-wrap; font-family: var(--font-display); font-size:
     let lista = [];
     try { lista = await api("api/tarefas"); } catch (e) { return; }
     const ativas = lista.filter(t => t.estado === "gerando" || t.estado === "na fila").length;
-    $("nfila").hidden = !ativas; $("nfila").textContent = ativas;
+    const pausadas = lista.filter(t => t.estado === "pausada").length;
+    $("nfila").hidden = !(ativas + pausadas); $("nfila").textContent = ativas + pausadas;
     const box = $("tarefas"); box.innerHTML = "";
     if (!lista.length) box.innerHTML = '<div class="empty">Nada na fila. Escolha um livro e um capítulo na aba Novo.</div>';
     lista.forEach(t => {
@@ -481,6 +497,8 @@ dialog pre { white-space: pre-wrap; font-family: var(--font-display); font-size:
       c.innerHTML = `<div class="head"><h2></h2><span class="pill ${t.estado}">${t.estado === "pronta" ? (t.so_texto ? "texto pronto" : "pronta") : t.estado}</span></div>
         <div class="muted small livro"></div>
         ${t.estado === "gerando" ? `<div class="progress"><i style="width:${pct}%"></i></div><div class="log"></div>` : ""}
+        ${t.partes_total > 1 && t.estado !== "pronta" ? `<div class="small"><b>${(t.partes_prontas || []).filter(Boolean).length} de ${t.partes_total}</b> partes prontas</div><div class="partes">${(t.partes_prontas || []).map(x => `<i class="${x ? "ok" : ""}"></i>`).join("")}</div>` : ""}
+        ${t.estado === "pausada" ? `<div class="msg pausa"></div>` : ""}
         ${t.estado === "erro" ? `<div class="msg err"></div>` : ""}
         <div class="acts"></div>`;
       c.querySelector("h2").textContent = t.rotulo;
@@ -490,11 +508,28 @@ dialog pre { white-space: pre-wrap; font-family: var(--font-display); font-size:
         c.querySelector(".log").textContent = (pct ? `${pct}%` + (t.restante ? ` · falta ${fmtMin(t.restante)}` : "") + " · " : "") + (reg[reg.length - 1] || "começando…");
       }
       if (t.estado === "erro") c.querySelector(".msg").textContent = t.erro || "Não foi possível gerar.";
+      if (t.estado === "pausada") c.querySelector(".msg").textContent = t.motivo === "cota"
+        ? "A cota diária do Gemini acabou. As partes prontas estão guardadas: toque em Continuar quando a cota voltar (no dia seguinte) e ele segue da próxima parte. Ou termine agora com a voz do Edge."
+        : "O Gemini parou de devolver áudio. As partes prontas estão guardadas: tente Continuar mais tarde ou termine agora com a voz do Edge.";
       const acts = c.querySelector(".acts");
-      const add = (txt, fn, cls = "btn") => { const b = document.createElement("button"); b.className = cls; b.textContent = txt; b.onclick = fn; acts.appendChild(b); };
+      const add = (txt, fn, cls = "btn") => { const b = document.createElement("button"); b.className = cls; b.textContent = txt; b.onclick = () => fn(b); acts.appendChild(b); };
       if (t.estado === "pronta" && t.arquivo) {
         if (t.arquivo.endsWith(".mp3")) add("Ouvir", () => { aba("ouvir"); tocarServidor(t.arquivo, true); }, "btn primary");
         else add("Ver texto", () => verTexto(t.arquivo), "btn primary");
+      }
+      if (t.estado === "pausada" || (t.estado === "erro" && t.partes_total)) {
+        add("Continuar", async () => { await api("api/tarefas/" + t.id + "/continuar", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ gemini_chave: $("chave").value.trim() }) }); carregarTarefas(); }, "btn primary");
+        add("Terminar agora com Edge", async () => { await api("api/tarefas/" + t.id + "/continuar", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ completar_com_edge: true, gemini_chave: $("chave").value.trim() }) }); carregarTarefas(); });
+      }
+      const nProntas = (t.partes_prontas || []).filter(Boolean).length;
+      if (["gerando", "pausada", "erro"].includes(t.estado) && t.partes_total > 1 && nProntas > 0) {
+        add(`Ouvir/baixar as ${nProntas} partes prontas`, async b => {
+          b.disabled = true; b.textContent = "Juntando…";
+          try {
+            const r = await api("api/tarefas/" + t.id + "/parcial", { method: "POST" });
+            aba("ouvir"); await carregarAudios(); tocarServidor(r.arquivo, true);
+          } catch (e) { b.disabled = false; b.textContent = e.message; }
+        });
       }
       if (t.estado === "na fila") add("Cancelar", async () => { await api("api/tarefas/" + t.id, { method: "DELETE" }); carregarTarefas(); }, "btn danger");
       if (["pronta", "erro", "cancelada"].includes(t.estado)) add("Tirar da lista", async () => { await api("api/tarefas/" + t.id, { method: "DELETE" }); carregarTarefas(); }, "btn ghost");

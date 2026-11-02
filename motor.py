@@ -21,6 +21,30 @@ class CotaEsgotada(Exception):
     pass
 
 
+# Situação da última geração, para quem chamar gerar() (o app no celular) poder mostrar as partes.
+SITUACAO = {"estado": "", "total": 0, "prontas": [], "motivo": ""}
+
+
+def juntar_parcial(sit, pasta_saida):
+    """Junta as partes já prontas (do começo até a primeira que falta) num MP3 que já dá para ouvir."""
+    partes = sit.get("partes") or []
+    prontas = []
+    for p in partes:
+        if os.path.exists(p) and os.path.getsize(p) > 0:
+            prontas.append(p)
+        else:
+            break
+    if not prontas:
+        return None
+    nome = f"{sit.get('nome', 'audio')} (partes 1-{len(prontas)} de {len(partes)}).mp3"
+    saida = os.path.join(pasta_saida, nome)
+    if sit.get("gemini"):
+        _pcm_para_mp3(prontas, saida)
+    else:
+        _juntar_mp3(prontas, saida)
+    return saida
+
+
 # ---------------- carregar o arquivo ----------------
 TITULOS_REFERENCIAS = re.compile(
     r"^\s*(?:[IVXLC]+\.|\d+\.)?\s*(refer[êe]ncias(?: bibliogr[áa]ficas)?|bibliografia|literatura|obras citadas|"
@@ -295,10 +319,10 @@ def _gemini_tentar(texto, voz, estilo):
     raise RespostaSemAudio(ultimo)
 
 
-async def _edge_como_pcm(texto, destino_pcm):
-    """Último recurso para um trecho que o Gemini recusa: gera com a voz do Edge no mesmo formato."""
+async def _edge_como_pcm(texto, destino_pcm, voz="pt-BR-AntonioNeural"):
+    """Gera um trecho com a voz do Edge no mesmo formato das partes do Gemini."""
     tmp = destino_pcm + ".edge.mp3"
-    await _edge_pedaco(texto, "pt-BR-AntonioNeural", "+0%", tmp)
+    await _edge_pedaco(texto, voz, "+0%", tmp)
     subprocess.run(["ffmpeg", "-y", "-loglevel", "error", "-i", tmp, "-f", "s16le", "-ar", "24000", "-ac", "1",
                     destino_pcm + ".tmp"], check=True)
     os.remove(tmp)
@@ -390,7 +414,8 @@ def _duracao(caminho):
 # ---------------- tudo junto ----------------
 async def gerar(capitulo="", paginas="", motor="Edge", voz_edge="pt-BR-FranciscaNeural", velocidade_edge=0,
                 voz_gemini="Kore", estilo_gemini="como um narrador de audiolivro", remover_notas=True,
-                biblia=True, revisar=False, so_texto=False, drive=True, baixar=True, sem_referencias=True):
+                biblia=True, revisar=False, so_texto=False, drive=True, baixar=True, sem_referencias=True,
+                completar_com_edge=False):
     if LIVRO is None and TEXTO_TXT is None:
         print("⚠️ Primeiro rode a etapa 2 e envie o PDF.")
         return None
@@ -485,8 +510,21 @@ async def gerar(capitulo="", paginas="", motor="Edge", voz_edge="pt-BR-Francisca
 
     inicio = time.time()
     recusas_seguidas = 0
+    pronta = lambda p: os.path.exists(p) and os.path.getsize(p) > 0
+    SITUACAO.update(estado="gerando", total=len(partes), prontas=[pronta(p) for p in partes], motivo="",
+                    partes=partes, gemini=usa_gemini, nome=nome)
+    ja = sum(SITUACAO["prontas"])
+    if ja:
+        print(f"♻️ {ja} de {len(partes)} partes já estavam prontas; continuando a partir da parte {ja + 1}.")
+    cota_acabou = False
     for k, (pedaco, destino) in enumerate(zip(pedacos, partes), 1):
-        if os.path.exists(destino) and os.path.getsize(destino) > 0:
+        if pronta(destino):
+            SITUACAO["prontas"][k - 1] = True
+            continue
+        if cota_acabou:      # completar o resto com a voz do Edge
+            await _edge_como_pcm(pedaco, destino, voz_edge)
+            SITUACAO["prontas"][k - 1] = True
+            print(f"   ✅ parte {k}/{len(pedacos)} (Edge)  ({(time.time() - inicio) / 60:.1f} min)", end="\r")
             continue
         try:
             if usa_gemini:
@@ -499,20 +537,30 @@ async def gerar(capitulo="", paginas="", motor="Edge", voz_edge="pt-BR-Francisca
                         print("   Isso costuma ser instabilidade do modelo de voz, que ainda está em teste no Google.")
                         print("   O que já ficou pronto está salvo. Tente de novo mais tarde (ele continua daqui)")
                         print("   ou troque o motor para Edge, que não tem esse problema.")
+                        SITUACAO.update(estado="pausada", motivo="instabilidade")
                         return None
                     print(f"\n   ⚠️ O Gemini não leu um trecho ({str(e)[:120]}). Ele será lido com a voz do Edge "
                           f"para o áudio não ficar com buraco:\n      “{pedaco[:90]}...”")
-                    await _edge_como_pcm(pedaco, destino)
+                    await _edge_como_pcm(pedaco, destino, voz_edge)
+                    SITUACAO["prontas"][k - 1] = True
                     continue
                 recusas_seguidas = 0
             else:
                 await _edge_pedaco(pedaco, voz_edge, vel, destino)
         except CotaEsgotada:
-            feitas = sum(os.path.exists(p) for p in partes)
-            print(f"\n⛔ A cota diária grátis do Gemini acabou ({feitas} de {len(partes)} partes prontas).")
-            print("   O progresso está salvo. Amanhã rode a etapa 3 com as mesmas opções e ele continua daqui,")
-            print("   ou troque o motor para Edge para terminar agora (começa do zero com a outra voz).")
+            feitas = sum(pronta(p) for p in partes)
+            print(f"\n⛔ A cota diária do Gemini acabou ({feitas} de {len(partes)} partes prontas).")
+            if completar_com_edge:
+                print(f"   Completando as {len(partes) - feitas} partes restantes com a voz {voz_edge}...")
+                cota_acabou = True
+                await _edge_como_pcm(pedaco, destino, voz_edge)
+                SITUACAO["prontas"][k - 1] = True
+                continue
+            print("   As partes prontas ficam guardadas. Peça de novo com as mesmas opções e ele continua da")
+            print(f"   parte {feitas + 1}, sem refazer nada.")
+            SITUACAO.update(estado="pausada", motivo="cota")
             return None
+        SITUACAO["prontas"][k - 1] = True
         decorrido = time.time() - inicio
         print(f"   ✅ parte {k}/{len(pedacos)}  ({decorrido / 60:.1f} min)", end="\r")
 
@@ -523,6 +571,9 @@ async def gerar(capitulo="", paginas="", motor="Edge", voz_edge="pt-BR-Francisca
     else:
         _juntar_mp3(partes, saida)
     print(f"\n🎉 Pronto: {os.path.basename(saida)}  ({_duracao(saida)})")
+    SITUACAO.update(estado="pronta")
+    if not drive:
+        shutil.rmtree(trab, ignore_errors=True)
 
     if drive:
         shutil.copy(saida, os.path.join(PASTA_DRIVE, os.path.basename(saida)))

@@ -127,8 +127,16 @@ def _trabalhador():
                 t["partes"] = int(m2[-1])
 
         SAIDA.destinos[threading.get_ident()] = anotar
+        t["situacao"] = motor.SITUACAO
+        motor.SITUACAO.update(estado="", total=0, prontas=[], motivo="")
         try:
             p = t["pedido"]
+            chave = (p.get("gemini_chave") or "").strip()
+            if chave:
+                from google import genai
+                motor._GEMINI = genai.Client(api_key=chave)
+            else:
+                motor._GEMINI = None          # usa a chave do servidor (GEMINI_API_KEY)
             motor.carregar(p["caminho"])
             res = asyncio.run(motor.gerar(
                 capitulo=p.get("capitulo", ""), paginas=p.get("paginas", ""),
@@ -139,9 +147,15 @@ def _trabalhador():
                 estilo_gemini=p.get("estilo_gemini") or "como um narrador de audiolivro: tom natural, calmo e expressivo",
                 remover_notas=bool(p.get("remover_notas", True)), biblia=bool(p.get("biblia", True)),
                 revisar=bool(p.get("revisar", False)), so_texto=bool(p.get("so_texto", False)),
-                drive=False, baixar=False, sem_referencias=bool(p.get("sem_referencias", True))))
+                drive=False, baixar=False, sem_referencias=bool(p.get("sem_referencias", True)),
+                completar_com_edge=bool(p.get("completar_com_edge", False))))
+            sit = dict(motor.SITUACAO, prontas=list(motor.SITUACAO["prontas"]))
+            t["situacao"] = sit
             if res:
                 t["estado"], t["progresso"], t["arquivo"] = "pronta", 1.0, os.path.basename(res)
+            elif sit.get("estado") == "pausada":
+                t["estado"], t["motivo"] = "pausada", sit.get("motivo", "")
+                t["progresso"] = sum(sit["prontas"]) / max(1, sit["total"])
             else:
                 t["estado"] = "erro"
                 t.setdefault("erro", (t.get("registro") or ["Não foi possível gerar."])[-1])
@@ -166,7 +180,9 @@ def _manter_acordado():
         return
     while True:
         time.sleep(240)
-        if any(t["estado"] in ("gerando", "na fila") for t in TAREFAS.values()):
+        agora = time.time()
+        if any(t["estado"] in ("gerando", "na fila") or
+               (t["estado"] == "pausada" and agora - t.get("fim", agora) < 36 * 3600) for t in TAREFAS.values()):
             try:
                 urllib.request.urlopen(url + "/api/saude", timeout=20).read()
             except Exception:
@@ -227,7 +243,8 @@ async def vozes(req):
         v = await motor.vozes_edge_pt()
     except Exception:
         v = ["pt-BR-FranciscaNeural", "pt-BR-ThalitaMultilingualNeural", "pt-BR-AntonioNeural"]
-    return JSONResponse({"edge": v, "gemini": VOZES_GEMINI, "gemini_disponivel": bool(os.environ.get("GEMINI_API_KEY"))})
+    return JSONResponse({"edge": v, "gemini": VOZES_GEMINI, "gemini_disponivel": True,
+                         "gemini_no_servidor": bool(os.environ.get("GEMINI_API_KEY"))})
 
 @protegido
 async def livros(req):
@@ -312,8 +329,8 @@ async def criar_tarefa(req):
         return JSONResponse({"erro": "Escolha um livro primeiro."}, status_code=400)
     if m["nome"].lower().endswith(".pdf") and not str(p.get("capitulo", "")).strip() and not str(p.get("paginas", "")).strip():
         return JSONResponse({"erro": "Escolha um capítulo ou escreva as páginas."}, status_code=400)
-    if p.get("motor") == "gemini" and not os.environ.get("GEMINI_API_KEY"):
-        return JSONResponse({"erro": "A voz do Gemini precisa da chave GEMINI_API_KEY nas configurações do Space."},
+    if p.get("motor") == "gemini" and not os.environ.get("GEMINI_API_KEY") and not (p.get("gemini_chave") or "").strip():
+        return JSONResponse({"erro": "A voz do Gemini precisa de uma chave: coloque a sua no campo 'Chave do Gemini'."},
                             status_code=400)
     p["caminho"] = m["caminho"]
     tid = uuid.uuid4().hex[:10]
@@ -328,7 +345,13 @@ async def tarefas(req):
     lista = sorted(TAREFAS.values(), key=lambda t: -t["criada"])[:30]
     saida = []
     for t in lista:
-        d = {k: v for k, v in t.items() if k != "pedido"}
+        d = {k: v for k, v in t.items() if k not in ("pedido", "situacao")}
+        sit = t.get("situacao") or {}
+        if sit.get("total"):
+            d["partes_total"] = sit["total"]
+            d["partes_prontas"] = list(sit.get("prontas") or [])
+            if t["estado"] == "gerando":
+                d["progresso"] = sum(d["partes_prontas"]) / sit["total"]
         if t["estado"] == "gerando" and t.get("progresso", 0) > 0.02:
             gasto = time.time() - t["inicio"]
             d["restante"] = int(gasto / t["progresso"] - gasto)
@@ -340,9 +363,44 @@ async def cancelar(req):
     t = TAREFAS.get(req.path_params["tid"])
     if t and t["estado"] == "na fila":
         t["estado"] = "cancelada"
-    elif t and t["estado"] in ("pronta", "erro", "cancelada"):
+    elif t and t["estado"] in ("pronta", "erro", "cancelada", "pausada"):
         TAREFAS.pop(t["id"], None)
     return JSONResponse({"ok": True})
+
+@protegido
+async def continuar(req):
+    t = TAREFAS.get(req.path_params["tid"])
+    if not t or t["estado"] not in ("pausada", "erro"):
+        return JSONResponse({"erro": "Essa tarefa não está pausada."}, status_code=400)
+    try:
+        extra = await req.json()
+    except Exception:
+        extra = {}
+    if extra.get("completar_com_edge"):
+        t["pedido"]["completar_com_edge"] = True
+    if "gemini_chave" in extra:
+        t["pedido"]["gemini_chave"] = extra.get("gemini_chave") or ""
+    t["estado"], t["erro"], t["motivo"] = "na fila", None, ""
+    t["situacao"] = dict(t.get("situacao") or {})
+    FILA.put(t["id"])
+    return JSONResponse({"ok": True})
+
+
+@protegido
+async def parcial(req):
+    t = TAREFAS.get(req.path_params["tid"])
+    sit = (t or {}).get("situacao") or {}
+    if not t or not sit.get("partes"):
+        return JSONResponse({"erro": "Ainda não há partes prontas nessa tarefa."}, status_code=400)
+    sit = dict(sit, partes=list(sit["partes"]))
+    try:
+        caminho = await asyncio.to_thread(motor.juntar_parcial, sit, PASTA_AUDIOS)
+    except Exception as e:
+        return JSONResponse({"erro": f"Não consegui juntar as partes ({str(e)[:120]})."}, status_code=500)
+    if not caminho:
+        return JSONResponse({"erro": "A primeira parte ainda não ficou pronta."}, status_code=400)
+    return JSONResponse({"arquivo": os.path.basename(caminho)})
+
 
 @protegido
 async def audios(req):
@@ -390,6 +448,8 @@ app = Starlette(routes=[
     Route("/api/tarefas", tarefas),
     Route("/api/tarefas", criar_tarefa, methods=["POST"]),
     Route("/api/tarefas/{tid}", cancelar, methods=["DELETE"]),
+    Route("/api/tarefas/{tid}/continuar", continuar, methods=["POST"]),
+    Route("/api/tarefas/{tid}/parcial", parcial, methods=["POST"]),
     Route("/api/audios", audios),
     Route("/api/audios/{nome:path}", audio),
     Route("/api/audios/{nome:path}", apagar_audio, methods=["DELETE"]),
