@@ -87,7 +87,8 @@ input[type=text], input[type=password], select, textarea { width: 100%; border: 
 .seg button[aria-pressed="true"] { background: var(--surface); color: var(--ink); box-shadow: 0 1px 3px rgba(0,0,0,.12); }
 .checks { display: grid; gap: 8px; }
 .checks label { display: flex; gap: 10px; align-items: flex-start; }
-.checks input { width: 20px; height: 20px; margin-top: 2px; accent-color: var(--accent); flex-shrink: 0; }
+.checks label.field { display: grid; gap: 6px; }
+.checks input[type=checkbox] { width: 20px; height: 20px; margin-top: 2px; accent-color: var(--accent); flex-shrink: 0; }
 .msg { border-radius: 10px; padding: 10px 12px; font-size: 0.92rem; }
 .msg.err { background: color-mix(in srgb, var(--danger) 14%, transparent); color: var(--ink); }
 .msg.ok { background: var(--accent-soft); }
@@ -224,7 +225,7 @@ dialog pre { white-space: pre-wrap; font-family: var(--font-display); font-size:
         <div id="boxGemini" class="checks" hidden>
           <label class="field"><span>Voz</span><select id="vozGemini"></select></label>
           <label class="field"><span>Estilo da leitura</span>
-            <input id="estilo" type="text" value="como um narrador de audiolivro: tom natural, calmo e expressivo"></label>
+            <textarea id="estilo" rows="2" style="resize:vertical">como um narrador de audiolivro: tom natural, calmo e expressivo</textarea></label>
           <label class="field"><span id="chaveRotulo">Chave do Gemini</span>
             <input id="chave" type="password" autocomplete="off" placeholder="cole a chave do aistudio.google.com/apikey"></label>
           <p class="small muted" id="chaveInfo">A chave fica guardada só neste celular.</p>
