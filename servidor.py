@@ -140,7 +140,8 @@ def _trabalhador():
             motor.carregar(p["caminho"])
             res = asyncio.run(motor.gerar(
                 capitulo=p.get("capitulo", ""), paginas=p.get("paginas", ""),
-                motor="Gemini" if p.get("motor") == "gemini" else "Edge",
+                motor={"gemini": "Gemini", "piper": "Piper"}.get(p.get("motor"), "Edge"),
+                voz_piper=p.get("voz_piper") or "Cadu", velocidade_piper=int(p.get("velocidade_piper") or 0),
                 voz_edge=p.get("voz_edge") or "pt-BR-FranciscaNeural",
                 velocidade_edge=int(p.get("velocidade_edge") or 0),
                 voz_gemini=p.get("voz_gemini") or "Kore",
@@ -243,7 +244,7 @@ async def vozes(req):
         v = await motor.vozes_edge_pt()
     except Exception:
         v = ["pt-BR-FranciscaNeural", "pt-BR-ThalitaMultilingualNeural", "pt-BR-AntonioNeural"]
-    return JSONResponse({"edge": v, "gemini": VOZES_GEMINI, "gemini_disponivel": True,
+    return JSONResponse({"edge": v, "gemini": VOZES_GEMINI, "piper": motor.VOZES_PIPER, "gemini_disponivel": True,
                          "gemini_no_servidor": bool(os.environ.get("GEMINI_API_KEY"))})
 
 @protegido

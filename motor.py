@@ -40,6 +40,8 @@ def juntar_parcial(sit, pasta_saida):
     saida = os.path.join(pasta_saida, nome)
     if sit.get("gemini"):
         _pcm_para_mp3(prontas, saida)
+    elif sit.get("formato") == ".wav":
+        _wav_para_mp3(prontas, saida)
     else:
         _juntar_mp3(prontas, saida)
     return saida
@@ -373,6 +375,100 @@ async def vozes_edge_pt():
     return sorted(v["ShortName"] for v in vozes if v["ShortName"].startswith("pt-BR"))
 
 
+# ---------------- Piper (voz que roda no próprio computador/servidor) ----------------
+VOZES_PIPER = ["Cadu", "Faber"]
+PASTA_MODELOS_PIPER = os.environ.get("PASTA_PIPER", os.path.join(os.path.expanduser("~"), ".cache", "piper"))
+_URL_PIPER = "https://huggingface.co/rhasspy/piper-voices/resolve/main/"
+_PIPER = {}
+
+
+def _baixar(url, destino):
+    import urllib.request
+    os.makedirs(os.path.dirname(destino), exist_ok=True)
+    req = urllib.request.Request(url, headers={"User-Agent": "audiolivros"})
+    with urllib.request.urlopen(req, timeout=120) as r, open(destino + ".tmp", "wb") as f:
+        shutil.copyfileobj(r, f)
+    os.replace(destino + ".tmp", destino)
+
+
+def _piper_arquivos(voz):
+    """Acha (e baixa, na primeira vez) o modelo pt_BR da voz pedida no catálogo oficial do Piper."""
+    nome = voz.lower()
+    for arq in os.listdir(PASTA_MODELOS_PIPER) if os.path.isdir(PASTA_MODELOS_PIPER) else []:
+        if arq.startswith(f"pt_BR-{nome}-") and arq.endswith(".onnx") and \
+                os.path.exists(os.path.join(PASTA_MODELOS_PIPER, arq + ".json")):
+            return os.path.join(PASTA_MODELOS_PIPER, arq)
+    catalogo = os.path.join(PASTA_MODELOS_PIPER, "voices.json")
+    if not os.path.exists(catalogo):
+        _baixar(_URL_PIPER + "voices.json", catalogo)
+    with open(catalogo, encoding="utf-8") as f:
+        import json
+        vozes = json.load(f)
+    chaves = [k for k in vozes if k.startswith(f"pt_BR-{nome}-")]
+    if not chaves:
+        disp = sorted({k.split("-")[1] for k in vozes if k.startswith("pt_BR-")})
+        raise RuntimeError(f"a voz '{voz}' não existe no catálogo do Piper. Vozes em português: {', '.join(disp)}")
+    ordem = {"high": 0, "medium": 1, "low": 2, "x_low": 3}
+    chave = sorted(chaves, key=lambda k: ordem.get(k.rsplit("-", 1)[1], 9))[0]
+    modelo = None
+    for caminho in vozes[chave]["files"]:
+        if caminho.endswith(".onnx") or caminho.endswith(".onnx.json"):
+            destino = os.path.join(PASTA_MODELOS_PIPER, os.path.basename(caminho))
+            if not os.path.exists(destino):
+                print(f"   ⬇️ baixando a voz {voz} ({os.path.basename(caminho)})...")
+                _baixar(_URL_PIPER + caminho, destino)
+            if caminho.endswith(".onnx"):
+                modelo = destino
+    return modelo
+
+
+def _piper_carregar(voz):
+    if voz in _PIPER:
+        return _PIPER[voz]
+    modelo = _piper_arquivos(voz)
+    try:
+        from piper import PiperVoice
+        _PIPER[voz] = ("api", PiperVoice.load(modelo))
+    except ImportError:
+        _PIPER[voz] = ("cli", modelo)
+    return _PIPER[voz]
+
+
+def _piper_pedaco(texto, voz, velocidade, destino):
+    """Gera um WAV com o Piper. velocidade: -30 a +50 (%), como no Edge."""
+    import wave
+    tipo, obj = _piper_carregar(voz)
+    escala = 1.0 / (1.0 + int(velocidade or 0) / 100.0)      # maior escala = fala mais devagar
+    tmp = destino + ".tmp"
+    if tipo == "api":
+        with wave.open(tmp, "wb") as wf:
+            if hasattr(obj, "synthesize_wav"):                   # piper-tts 1.3 ou mais novo
+                try:
+                    from piper import SynthesisConfig
+                    obj.synthesize_wav(texto, wf, syn_config=SynthesisConfig(length_scale=escala))
+                except ImportError:
+                    obj.synthesize_wav(texto, wf)
+            else:                                                # piper-tts 1.2
+                obj.synthesize(texto, wf, length_scale=escala)
+    else:
+        import sys
+        r = subprocess.run([sys.executable, "-m", "piper", "-m", obj, "-f", tmp], input=texto.encode("utf-8"),
+                           capture_output=True)
+        if r.returncode != 0:
+            raise RuntimeError(r.stderr.decode("utf-8", "replace")[-300:])
+    os.replace(tmp, destino)
+
+
+def _wav_para_mp3(partes, saida):
+    lista = saida + ".lista.txt"
+    with open(lista, "w", encoding="utf-8") as f:
+        for p in partes:
+            f.write("file '" + p.replace("'", "'\\''") + "'\n")
+    subprocess.run(["ffmpeg", "-y", "-loglevel", "error", "-f", "concat", "-safe", "0", "-i", lista,
+                    "-codec:a", "libmp3lame", "-b:a", "64k", saida], check=True)
+    os.remove(lista)
+
+
 # ---------------- juntar as partes ----------------
 def _juntar_mp3(partes, saida):
     lista = saida + ".lista.txt"
@@ -415,7 +511,7 @@ def _duracao(caminho):
 async def gerar(capitulo="", paginas="", motor="Edge", voz_edge="pt-BR-FranciscaNeural", velocidade_edge=0,
                 voz_gemini="Kore", estilo_gemini="como um narrador de audiolivro", remover_notas=True,
                 biblia=True, revisar=False, so_texto=False, drive=True, baixar=True, sem_referencias=True,
-                completar_com_edge=False):
+                completar_com_edge=False, voz_piper="Cadu", velocidade_piper=0):
     if LIVRO is None and TEXTO_TXT is None:
         print("⚠️ Primeiro rode a etapa 2 e envie o PDF.")
         return None
@@ -490,8 +586,16 @@ async def gerar(capitulo="", paginas="", motor="Edge", voz_edge="pt-BR-Francisca
 
     # 4) voz
     usa_gemini = motor.lower().startswith("gemini")
+    usa_piper = motor.lower().startswith("piper")
     if usa_gemini:
         limite, ext, extra = 1500, ".pcm", f"gemini-v2|{voz_gemini}|{estilo_gemini}"
+    elif usa_piper:
+        try:
+            await asyncio.to_thread(_piper_carregar, voz_piper)
+        except Exception as e:
+            print(f"⚠️ Não consegui preparar a voz {voz_piper} do Piper ({str(e)[:200]}).")
+            return None
+        limite, ext, extra = 2500, ".wav", f"piper|{voz_piper}|{int(velocidade_piper)}"
     else:
         disponiveis = await vozes_edge_pt()
         if voz_edge not in disponiveis:
@@ -506,13 +610,14 @@ async def gerar(capitulo="", paginas="", motor="Edge", voz_edge="pt-BR-Francisca
     trab = os.path.join(base_trab, nome_seguro(nome, 60) + "_" + assinatura(fala, extra))
     os.makedirs(trab, exist_ok=True)
     partes = [os.path.join(trab, f"parte_{k:04d}{ext}") for k in range(len(pedacos))]
-    print(f"🔊 Gerando {len(pedacos)} parte(s) com {'Gemini · ' + voz_gemini if usa_gemini else voz_edge}...")
+    rotulo_voz = ("Gemini · " + voz_gemini) if usa_gemini else (("Piper · " + voz_piper) if usa_piper else voz_edge)
+    print(f"🔊 Gerando {len(pedacos)} parte(s) com {rotulo_voz}...")
 
     inicio = time.time()
     recusas_seguidas = 0
     pronta = lambda p: os.path.exists(p) and os.path.getsize(p) > 0
     SITUACAO.update(estado="gerando", total=len(partes), prontas=[pronta(p) for p in partes], motivo="",
-                    partes=partes, gemini=usa_gemini, nome=nome)
+                    partes=partes, gemini=usa_gemini, formato=ext, nome=nome)
     ja = sum(SITUACAO["prontas"])
     if ja:
         print(f"♻️ {ja} de {len(partes)} partes já estavam prontas; continuando a partir da parte {ja + 1}.")
@@ -545,6 +650,8 @@ async def gerar(capitulo="", paginas="", motor="Edge", voz_edge="pt-BR-Francisca
                     SITUACAO["prontas"][k - 1] = True
                     continue
                 recusas_seguidas = 0
+            elif usa_piper:
+                await asyncio.to_thread(_piper_pedaco, pedaco, voz_piper, velocidade_piper, destino)
             else:
                 await _edge_pedaco(pedaco, voz_edge, vel, destino)
         except CotaEsgotada:
@@ -568,6 +675,8 @@ async def gerar(capitulo="", paginas="", motor="Edge", voz_edge="pt-BR-Francisca
     saida = os.path.join(PASTA_AUDIOS, nome + ".mp3")
     if usa_gemini:
         _pcm_para_mp3(partes, saida)
+    elif usa_piper:
+        _wav_para_mp3(partes, saida)
     else:
         _juntar_mp3(partes, saida)
     print(f"\n🎉 Pronto: {os.path.basename(saida)}  ({_duracao(saida)})")

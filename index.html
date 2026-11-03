@@ -82,7 +82,7 @@ input[type=text], input[type=password], select, textarea { width: 100%; border: 
 .toc li button .pg { color: var(--muted); font-size: 0.8rem; font-variant-numeric: tabular-nums; }
 .toc li.sub button { padding-left: 28px; font-size: 0.9rem; color: var(--muted); }
 .toc li button[aria-pressed="true"] { background: var(--accent-soft); color: var(--ink); font-weight: 600; }
-.seg { display: grid; grid-template-columns: 1fr 1fr; gap: 4px; background: var(--bg); border: 1px solid var(--line); border-radius: 10px; padding: 3px; }
+.seg { display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 4px; background: var(--bg); border: 1px solid var(--line); border-radius: 10px; padding: 3px; }
 .seg button { border: 0; background: none; padding: 9px; border-radius: 8px; font-weight: 600; color: var(--muted); }
 .seg button[aria-pressed="true"] { background: var(--surface); color: var(--ink); box-shadow: 0 1px 3px rgba(0,0,0,.12); }
 .checks { display: grid; gap: 8px; }
@@ -214,13 +214,20 @@ dialog pre { white-space: pre-wrap; font-family: var(--font-display); font-size:
       <div class="card" id="cardVoz" hidden>
         <div class="step"><b>3</b><h2>Voz</h2></div>
         <div class="seg">
-          <button id="mEdge" aria-pressed="true">Edge · grátis</button>
-          <button id="mGemini" aria-pressed="false">Gemini · natural</button>
+          <button id="mEdge" aria-pressed="true">Edge</button>
+          <button id="mPiper" aria-pressed="false">Cadu</button>
+          <button id="mGemini" aria-pressed="false">Gemini</button>
         </div>
         <div id="boxEdge" class="checks">
           <label class="field"><span>Voz</span><select id="vozEdge"></select></label>
           <label class="field"><span>Velocidade da gravação: <b id="velTxt">0%</b></span>
             <input type="range" id="velEdge" min="-30" max="50" step="5" value="0"></label>
+        </div>
+        <div id="boxPiper" class="checks" hidden>
+          <label class="field"><span>Voz</span><select id="vozPiper"></select></label>
+          <label class="field"><span>Velocidade da gravação: <b id="velPiperTxt">0%</b></span>
+            <input type="range" id="velPiper" min="-30" max="50" step="5" value="0"></label>
+          <p class="small muted">Voz do Piper, que roda no próprio servidor, sem limite de uso. No plano grátis do Render ela é mais lenta para gerar que a Edge. Na primeira vez, o servidor baixa a voz (uns 60 MB).</p>
         </div>
         <div id="boxGemini" class="checks" hidden>
           <label class="field"><span>Voz</span><select id="vozGemini"></select></label>
@@ -429,11 +436,14 @@ dialog pre { white-space: pre-wrap; font-family: var(--font-display); font-size:
   function setMotor(m) {
     estado.motor = m; pref("motor", m);
     $("mEdge").setAttribute("aria-pressed", m === "edge"); $("mGemini").setAttribute("aria-pressed", m === "gemini");
-    $("boxEdge").hidden = m !== "edge"; $("boxGemini").hidden = m !== "gemini";
+    $("mPiper").setAttribute("aria-pressed", m === "piper");
+    $("boxEdge").hidden = m !== "edge"; $("boxGemini").hidden = m !== "gemini"; $("boxPiper").hidden = m !== "piper";
   }
+  $("mPiper").onclick = () => setMotor("piper");
+  $("velPiper").oninput = () => { $("velPiperTxt").textContent = ($("velPiper").value > 0 ? "+" : "") + $("velPiper").value + "%"; };
   $("mEdge").onclick = () => setMotor("edge"); $("mGemini").onclick = () => setMotor("gemini");
   $("velEdge").oninput = () => { $("velTxt").textContent = ($("velEdge").value > 0 ? "+" : "") + $("velEdge").value + "%"; };
-  ["vozEdge", "vozGemini", "estilo"].forEach(id => $(id).addEventListener("change", () => pref(id, $(id).value)));
+  ["vozEdge", "vozGemini", "vozPiper", "estilo"].forEach(id => $(id).addEventListener("change", () => pref(id, $(id).value)));
   $("chave").addEventListener("change", () => pref("chave", $("chave").value.trim()));
   $("oCompletar").addEventListener("change", () => pref("completar", $("oCompletar").checked ? "1" : ""));
 
@@ -446,12 +456,13 @@ dialog pre { white-space: pre-wrap; font-family: var(--font-display); font-size:
     };
     preenche($("vozEdge"), v.edge, v.edge.includes("pt-BR-ThalitaMultilingualNeural") ? "pt-BR-ThalitaMultilingualNeural" : "pt-BR-FranciscaNeural");
     preenche($("vozGemini"), v.gemini, "Charon");
+    preenche($("vozPiper"), v.piper || ["Cadu"], "Cadu");
     if (pref("estilo")) $("estilo").value = pref("estilo");
     estado.chaveServidor = !!v.gemini_no_servidor;
     $("chave").value = pref("chave") || "";
     $("chaveRotulo").textContent = estado.chaveServidor ? "Chave do Gemini (opcional: o servidor já tem uma)" : "Chave do Gemini";
     $("oCompletar").checked = pref("completar") === "1";
-    setMotor(pref("motor") === "gemini" ? "gemini" : "edge");
+    setMotor(["gemini", "piper"].includes(pref("motor")) ? pref("motor") : "edge");
   }
 
   async function pedir(soTexto) {
@@ -465,7 +476,8 @@ dialog pre { white-space: pre-wrap; font-family: var(--font-display); font-size:
     }
     const corpo = {
       livro: estado.livro, capitulo, paginas: $("paginas").value.trim(), rotulo: rotulo(), motor: estado.motor,
-      voz_edge: $("vozEdge").value, velocidade_edge: Number($("velEdge").value), voz_gemini: $("vozGemini").value,
+      voz_edge: $("vozEdge").value, velocidade_edge: Number($("velEdge").value),
+      voz_piper: $("vozPiper").value, velocidade_piper: Number($("velPiper").value), voz_gemini: $("vozGemini").value,
       estilo_gemini: $("estilo").value, remover_notas: $("oNotas").checked, biblia: $("oBiblia").checked,
       sem_referencias: $("oRefs").checked, revisar: $("oRevisar").checked && (estado.chaveServidor || !!$("chave").value.trim()),
       so_texto: soTexto, gemini_chave: $("chave").value.trim(), completar_com_edge: $("oCompletar").checked
