@@ -403,6 +403,84 @@ async def parcial(req):
     return JSONResponse({"arquivo": os.path.basename(caminho)})
 
 
+# ---------------- fotos de páginas ----------------
+LEITURAS = {}
+
+def _ler_fotos(lid_tmp, caminhos, chave, remover_notas):
+    L = LEITURAS[lid_tmp]
+    buf = []
+    def anotar(s):
+        buf.append(s)
+        linhas = [l.strip() for l in re.split(r"[\r\n]+", "".join(buf)) if l.strip()]
+        L["registro"] = linhas[-6:]
+        m = re.findall(r"lendo a foto (\d+)/(\d+)", "".join(buf))
+        if m:
+            k, n = map(int, m[-1])
+            L["progresso"] = (k - 1) / n
+    SAIDA.destinos[threading.get_ident()] = anotar
+    try:
+        texto, metodo = motor.ocr_imagens(caminhos, chave or None, remover_notas)
+        if not texto.strip():
+            raise RuntimeError("não encontrei texto nas fotos. Tente fotos mais nítidas, com a página inteira e boa luz.")
+        nome = time.strftime("Fotos %d-%m-%Y %Hh%M", time.gmtime(time.time() - 3 * 3600)) + ".txt"
+        tmp = os.path.join(PASTA_LIVROS, f".fotos_{uuid.uuid4().hex}")
+        with open(tmp, "w", encoding="utf-8") as f:
+            f.write(texto)
+        info = _registrar_livro(tmp, nome)
+        L.update(estado="pronta", livro=info["id"], metodo=metodo, progresso=1.0)
+    except Exception as e:
+        traceback.print_exc(file=sys.__stderr__)
+        L.update(estado="erro", erro=str(e)[:300])
+    finally:
+        SAIDA.destinos.pop(threading.get_ident(), None)
+        shutil.rmtree(os.path.dirname(caminhos[0]), ignore_errors=True)
+
+
+@protegido
+async def enviar_fotos(req):
+    form = await req.form(max_files=40, max_part_size=25 * 1024 * 1024)
+    fotos = form.getlist("fotos")
+    if not fotos:
+        return JSONResponse({"erro": "Tire ou escolha pelo menos uma foto."}, status_code=400)
+    pasta = os.path.join(DADOS, "fotos", uuid.uuid4().hex)
+    os.makedirs(pasta, exist_ok=True)
+    caminhos = []
+    for k, arq in enumerate(fotos):
+        ext = ".png" if (getattr(arq, "content_type", "") or "").endswith("png") else ".jpg"
+        c = os.path.join(pasta, f"{k:03d}{ext}")
+        with open(c, "wb") as f:
+            f.write(await arq.read())
+        caminhos.append(c)
+    lid_tmp = uuid.uuid4().hex[:10]
+    LEITURAS[lid_tmp] = {"id": lid_tmp, "estado": "lendo", "progresso": 0.0, "registro": [], "fotos": len(caminhos)}
+    chave = (form.get("gemini_chave") or "").strip()
+    notas = (form.get("remover_notas") or "1") != "0"
+    threading.Thread(target=_ler_fotos, args=(lid_tmp, caminhos, chave, notas), daemon=True).start()
+    return JSONResponse({"id": lid_tmp})
+
+
+@protegido
+async def leitura(req):
+    L = LEITURAS.get(req.path_params["rid"])
+    if not L:
+        return JSONResponse({"erro": "Leitura não encontrada (o servidor pode ter reiniciado). Envie as fotos de novo."}, status_code=404)
+    return JSONResponse(L)
+
+
+@protegido
+async def texto_livro(req):
+    m = _meta_livros().get(req.path_params["lid"])
+    if not m or not m["nome"].lower().endswith(".txt"):
+        return JSONResponse({"erro": "Texto não encontrado."}, status_code=404)
+    if req.method == "PUT":
+        dados = await req.json()
+        with open(m["caminho"], "w", encoding="utf-8") as f:
+            f.write(dados.get("texto") or "")
+        return JSONResponse({"ok": True})
+    with open(m["caminho"], encoding="utf-8") as f:
+        return JSONResponse({"texto": f.read()})
+
+
 @protegido
 async def audios(req):
     lista = []
@@ -446,6 +524,9 @@ app = Starlette(routes=[
     Route("/api/livros", enviar_livro, methods=["POST"]),
     Route("/api/livros/{lid}", livro),
     Route("/api/livros/{lid}", apagar_livro, methods=["DELETE"]),
+    Route("/api/livros/{lid}/texto", texto_livro, methods=["GET", "PUT"]),
+    Route("/api/fotos", enviar_fotos, methods=["POST"]),
+    Route("/api/fotos/{rid}", leitura),
     Route("/api/tarefas", tarefas),
     Route("/api/tarefas", criar_tarefa, methods=["POST"]),
     Route("/api/tarefas/{tid}", cancelar, methods=["DELETE"]),

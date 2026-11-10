@@ -102,6 +102,12 @@ input[type=text], input[type=password], select, textarea { width: 100%; border: 
 .pill.erro { color: var(--danger); border-color: var(--danger); }
 .progress { height: 6px; border-radius: 3px; background: var(--line); overflow: hidden; }
 .progress i { display: block; height: 100%; background: var(--accent); transition: width .5s; }
+.thumbs { display: grid; grid-template-columns: repeat(auto-fill, minmax(84px, 1fr)); gap: 8px; }
+.thumb { position: relative; aspect-ratio: 3 / 4; border-radius: 8px; overflow: hidden; border: 1px solid var(--line); background: var(--bg); max-width: 100%; }
+.thumb img { width: 100%; height: 100%; object-fit: cover; display: block; }
+.thumb b { position: absolute; left: 4px; top: 4px; background: var(--accent); color: var(--accent-ink); border-radius: 999px; font-size: 0.72rem; min-width: 1.5em; text-align: center; padding: 0 5px; }
+.thumb button { position: absolute; right: 3px; top: 3px; width: 26px; height: 26px; border-radius: 50%; border: 0; background: rgba(0,0,0,.6); color: #fff; font-size: 0.9rem; line-height: 1; }
+textarea#textoTxt { min-height: 220px; font-family: var(--font-display); line-height: 1.55; resize: vertical; }
 .partes { display: flex; flex-wrap: wrap; gap: 3px; }
 .partes i { width: 14px; height: 14px; border-radius: 3px; background: var(--line); }
 .partes i.ok { background: var(--accent); }
@@ -187,6 +193,21 @@ dialog pre { white-space: pre-wrap; font-family: var(--font-display); font-size:
         <div class="row">
           <label class="btn file" for="arquivo">Enviar PDF<input id="arquivo" type="file" accept=".pdf,.txt,application/pdf,text/plain"></label>
           <button class="btn ghost" id="mostrarLink">Colar link do Drive</button>
+          <button class="btn ghost" id="mostrarFotos">Fotos de páginas</button>
+        </div>
+        <div id="fotosBox" class="checks" hidden>
+          <div class="row">
+            <label class="btn primary file" for="camera">Tirar foto<input id="camera" type="file" accept="image/*" capture="environment"></label>
+            <label class="btn file" for="galeria">Escolher da galeria<input id="galeria" type="file" accept="image/*" multiple></label>
+          </div>
+          <div class="thumbs" id="thumbs"></div>
+          <p class="small muted" id="fotosDica">Fotografe a página inteira, reta e com boa luz. Pode tirar várias: a ordem das fotos é a ordem da leitura. Escolha a voz no passo 3 e toque em “Ler e gerar áudio”.</p>
+          <div class="row">
+            <button class="btn" id="soLer">Só ler e conferir</button>
+            <button class="btn primary big" id="lerGerar">Ler e gerar áudio</button>
+          </div>
+          <div id="fotosMsg" class="msg ok" hidden></div>
+          <div id="fotosErr" class="msg err" hidden></div>
         </div>
         <form class="row" id="linkForm" hidden>
           <input id="link" type="text" inputmode="url" placeholder="https://drive.google.com/file/d/…" style="flex:1">
@@ -206,6 +227,8 @@ dialog pre { white-space: pre-wrap; font-family: var(--font-display); font-size:
           </div>
           <ul class="toc" id="toc"></ul>
         </div>
+        <label class="field" id="txtBox" hidden><span>Texto que será lido (pode corrigir aqui)</span>
+          <textarea id="textoTxt" spellcheck="true"></textarea></label>
         <label class="field"><span>ou páginas (como no leitor de PDF)</span>
           <input id="paginas" type="text" inputmode="text" autocomplete="off" autocapitalize="off" placeholder="ex.: 45-78 ou 45 a 78"></label>
         <div id="escolha" class="small"></div>
@@ -344,12 +367,12 @@ dialog pre { white-space: pre-wrap; font-family: var(--font-display); font-size:
       box.appendChild(b);
     });
     box.hidden = !lista.length;
-    if (selecionar) abrirLivro(selecionar);
+    if (selecionar) return abrirLivro(selecionar);
     else if (!estado.livro && lista.length && pref("livro")) { if (lista.some(l => l.id === pref("livro"))) abrirLivro(pref("livro")); }
   }
 
   async function abrirLivro(id) {
-    estado.livro = id; estado.sel = []; pref("livro", id);
+    estado.livro = id; estado.sel = []; pref("livro", id); $("txtBox").hidden = true;
     document.querySelectorAll(".bookchip").forEach((b, i) => b.setAttribute("aria-pressed", false));
     $("envioErr").hidden = true;
     $("livroTitulo").textContent = "Carregando…"; $("cardTrecho").hidden = false;
@@ -359,8 +382,10 @@ dialog pre { white-space: pre-wrap; font-family: var(--font-display); font-size:
       [...$("books").children].forEach(b => b.setAttribute("aria-pressed", b.querySelector(".t").textContent === info.nome.replace(/\.(pdf|txt)$/i, "").replace(/_/g, " ")));
       $("livroTitulo").textContent = info.nome.replace(/\.(pdf|txt)$/i, "").replace(/_/g, " ");
       if (info.tipo === "txt") {
-        $("livroInfo").textContent = "Arquivo de texto: o áudio usa o texto inteiro.";
+        $("livroInfo").textContent = "O áudio usa o texto inteiro abaixo.";
         $("tocBox").hidden = true; $("paginas").parentElement.hidden = true;
+        $("txtBox").hidden = false; $("textoTxt").value = "Carregando…"; estado.txtSujo = false;
+        api("api/livros/" + id + "/texto").then(r => { $("textoTxt").value = r.texto; }).catch(() => { $("textoTxt").value = ""; });
       } else if (!info.tem_texto) {
         $("livroInfo").textContent = "Este PDF é só imagem (digitalizado) e precisa de OCR antes. Não dá para ler o texto dele.";
         $("tocBox").hidden = true; $("paginas").parentElement.hidden = true;
@@ -432,6 +457,71 @@ dialog pre { white-space: pre-wrap; font-family: var(--font-display); font-size:
   $("mostrarLink").onclick = () => { $("linkForm").hidden = !$("linkForm").hidden; if (!$("linkForm").hidden) $("link").focus(); };
   $("linkForm").onsubmit = e => { e.preventDefault(); enviar({ method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ link: $("link").value }) }); };
 
+  // ---------------- fotos de páginas ----------------
+  let fotos = [];
+  $("mostrarFotos").onclick = () => {
+    const abrir = $("fotosBox").hidden; $("fotosBox").hidden = !abrir;
+    if (abrir) { $("cardVoz").hidden = false; $("linkForm").hidden = true; }
+  };
+  async function reduzir(file) {
+    try {
+      const bmp = await createImageBitmap(file);
+      const k = Math.min(1, 2200 / Math.max(bmp.width, bmp.height));
+      const c = document.createElement("canvas"); c.width = Math.round(bmp.width * k); c.height = Math.round(bmp.height * k);
+      c.getContext("2d").drawImage(bmp, 0, 0, c.width, c.height);
+      return await new Promise(r => c.toBlob(b => r(b || file), "image/jpeg", 0.85));
+    } catch (e) { return file; }
+  }
+  async function adicionarFotos(lista) {
+    for (const f of lista) { const b = await reduzir(f); fotos.push({ blob: b, url: URL.createObjectURL(b) }); }
+    desenharFotos();
+  }
+  function desenharFotos() {
+    const box = $("thumbs"); box.innerHTML = "";
+    fotos.forEach((f, i) => {
+      const d = document.createElement("div"); d.className = "thumb";
+      d.innerHTML = `<img alt="Foto ${i + 1}"><b>${i + 1}</b><button aria-label="Remover foto ${i + 1}">✕</button>`;
+      d.querySelector("img").src = f.url;
+      d.querySelector("button").onclick = () => { URL.revokeObjectURL(f.url); fotos.splice(i, 1); desenharFotos(); };
+      box.appendChild(d);
+    });
+    $("soLer").disabled = $("lerGerar").disabled = !fotos.length;
+    $("lerGerar").textContent = fotos.length ? `Ler ${fotos.length} foto${fotos.length > 1 ? "s" : ""} e gerar áudio` : "Ler e gerar áudio";
+  }
+  $("camera").onchange = e => { const l = [...e.target.files]; e.target.value = ""; adicionarFotos(l); };
+  $("galeria").onchange = e => { const l = [...e.target.files]; e.target.value = ""; adicionarFotos(l); };
+  desenharFotos();
+
+  async function lerFotos(gerarDepois) {
+    $("fotosErr").hidden = true; $("fotosMsg").hidden = false; $("fotosMsg").textContent = "Enviando as fotos…";
+    $("soLer").disabled = $("lerGerar").disabled = true;
+    try {
+      const fd = new FormData();
+      fotos.forEach((f, i) => fd.append("fotos", f.blob, `pagina-${String(i + 1).padStart(3, "0")}.jpg`));
+      fd.append("gemini_chave", $("chave").value.trim()); fd.append("remover_notas", $("oNotas").checked ? "1" : "0");
+      const r = await api("api/fotos", { method: "POST", body: fd });
+      let L;
+      while (true) {
+        await new Promise(ok => setTimeout(ok, 2000));
+        L = await api("api/fotos/" + r.id);
+        const reg = (L.registro || []); $("fotosMsg").textContent = (reg[reg.length - 1] || "Lendo as fotos…").replace(/^📷\s*/, "");
+        if (L.estado !== "lendo") break;
+      }
+      if (L.estado === "erro") throw new Error(L.erro || "Não consegui ler as fotos.");
+      $("fotosMsg").textContent = `Texto lido (${L.metodo}).` + (gerarDepois ? " Gerando o áudio…" : " Confira abaixo e toque em Gerar áudio.");
+      fotos.forEach(f => URL.revokeObjectURL(f.url)); fotos = []; desenharFotos();
+      await carregarLivros(L.livro);
+      await new Promise(ok => setTimeout(ok, 600));
+      if (gerarDepois) await pedir(false);
+      else $("cardTrecho").scrollIntoView({ behavior: "smooth", block: "start" });
+    } catch (e) {
+      $("fotosMsg").hidden = true; $("fotosErr").textContent = e.message; $("fotosErr").hidden = false; desenharFotos();
+    }
+  }
+  $("soLer").onclick = () => lerFotos(false);
+  $("lerGerar").onclick = () => lerFotos(true);
+  $("textoTxt").addEventListener("input", () => { estado.txtSujo = true; });
+
   // ---------------- voz ----------------
   function setMotor(m) {
     estado.motor = m; pref("motor", m);
@@ -474,6 +564,10 @@ dialog pre { white-space: pre-wrap; font-family: var(--font-display); font-size:
       if (!estado.sel.length) { $("gerarErr").textContent = "Escolha um capítulo ou escreva as páginas."; $("gerarErr").hidden = false; return; }
       capitulo = estado.sel.length === 2 ? `${estado.sel[0]}-${estado.sel[1]}` : String(estado.sel[0]);
     }
+    if (info.tipo === "txt" && estado.txtSujo) {
+      try { await api("api/livros/" + estado.livro + "/texto", { method: "PUT", headers: { "content-type": "application/json" }, body: JSON.stringify({ texto: $("textoTxt").value }) }); estado.txtSujo = false; }
+      catch (e) { $("gerarErr").textContent = "Não consegui salvar as correções do texto: " + e.message; $("gerarErr").hidden = false; return; }
+    }
     const corpo = {
       livro: estado.livro, capitulo, paginas: $("paginas").value.trim(), rotulo: rotulo(), motor: estado.motor,
       voz_edge: $("vozEdge").value, velocidade_edge: Number($("velEdge").value),
@@ -486,7 +580,8 @@ dialog pre { white-space: pre-wrap; font-family: var(--font-display); font-size:
       $("gerarErr").textContent = "Cole a chave do Gemini no campo acima (ou escolha a voz Edge)."; $("gerarErr").hidden = false; return;
     }
     try {
-      await api("api/tarefas", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(corpo) });
+      const r = await api("api/tarefas", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(corpo) });
+      minhas[r.id] = { rotulo: corpo.rotulo || "Áudio", livro: info.nome, criada: Date.now() / 1000 }; salvarMinhas();
       aba("fila");
     } catch (e) { $("gerarErr").textContent = e.message; $("gerarErr").hidden = false; }
   }
@@ -495,10 +590,18 @@ dialog pre { white-space: pre-wrap; font-family: var(--font-display); font-size:
 
   // ---------------- fila ----------------
   let timerFila = null;
+  let minhas = {};
+  try { minhas = JSON.parse(pref("minhas") || "{}") || {}; } catch (e) { minhas = {}; }
+  const salvarMinhas = () => pref("minhas", JSON.stringify(minhas));
   const fmtMin = s => s < 60 ? "menos de 1 min" : `uns ${Math.round(s / 60)} min`;
   async function carregarTarefas() {
     let lista = [];
     try { lista = await api("api/tarefas"); } catch (e) { return; }
+    const noServidor = new Set(lista.map(t => t.id));
+    Object.entries(minhas).forEach(([id, m]) => {
+      if (!noServidor.has(id)) lista.push({ id, rotulo: m.rotulo, livro: m.livro || "", estado: "sumiu", criada: m.criada, local: true });
+    });
+    lista.sort((a, b) => (b.criada || 0) - (a.criada || 0));
     const ativas = lista.filter(t => t.estado === "gerando" || t.estado === "na fila").length;
     const pausadas = lista.filter(t => t.estado === "pausada").length;
     $("nfila").hidden = !(ativas + pausadas); $("nfila").textContent = ativas + pausadas;
@@ -521,6 +624,7 @@ dialog pre { white-space: pre-wrap; font-family: var(--font-display); font-size:
         c.querySelector(".log").textContent = (pct ? `${pct}%` + (t.restante ? ` · falta ${fmtMin(t.restante)}` : "") + " · " : "") + (reg[reg.length - 1] || "começando…");
       }
       if (t.estado === "erro") c.querySelector(".msg").textContent = t.erro || "Não foi possível gerar.";
+      if (t.estado === "sumiu") { const m = document.createElement("div"); m.className = "msg err"; m.textContent = "Esta tarefa sumiu porque o servidor reiniciou no meio da geração (no plano grátis isso acontece quando falta memória). Peça de novo; se repetir, use a voz Edge ou um trecho menor."; c.insertBefore(m, c.querySelector(".acts")); }
       if (t.estado === "pausada") c.querySelector(".msg").textContent = t.motivo === "cota"
         ? "A cota diária do Gemini acabou. As partes prontas estão guardadas: toque em Continuar quando a cota voltar (no dia seguinte) e ele segue da próxima parte. Ou termine agora com a voz do Edge."
         : "O Gemini parou de devolver áudio. As partes prontas estão guardadas: tente Continuar mais tarde ou termine agora com a voz do Edge.";
@@ -545,7 +649,10 @@ dialog pre { white-space: pre-wrap; font-family: var(--font-display); font-size:
         });
       }
       if (t.estado === "na fila") add("Cancelar", async () => { await api("api/tarefas/" + t.id, { method: "DELETE" }); carregarTarefas(); }, "btn danger");
-      if (["pronta", "erro", "cancelada"].includes(t.estado)) add("Tirar da lista", async () => { await api("api/tarefas/" + t.id, { method: "DELETE" }); carregarTarefas(); }, "btn ghost");
+      if (["pronta", "erro", "cancelada", "pausada", "sumiu"].includes(t.estado)) add("Tirar da lista", async () => {
+        delete minhas[t.id]; salvarMinhas();
+        if (!t.local) await api("api/tarefas/" + t.id, { method: "DELETE" }).catch(() => {});
+        carregarTarefas(); }, "btn ghost");
       box.appendChild(c);
     });
     clearTimeout(timerFila);

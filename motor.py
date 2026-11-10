@@ -4,6 +4,7 @@
 import os, re, time, base64, shutil, asyncio, subprocess, getpass
 try:                      # fora do Colab (no servidor) o núcleo vem de outro arquivo
     from nucleo import *  # noqa: F401,F403
+    from nucleo import _juntar, _resolver_hifens  # noqa: F401
 except ImportError:
     pass
 
@@ -353,6 +354,122 @@ def _gemini_pedaco(texto, voz, estilo, destino):
     os.replace(destino + ".tmp", destino)
 
 
+# ---------------- Fotos de páginas → texto ----------------
+INSTRUCAO_OCR = (
+    "Esta é a foto de uma ou duas páginas de um livro em português. Transcreva o TEXTO PRINCIPAL exatamente "
+    "como está escrito, na ordem de leitura (se houver duas colunas ou duas páginas, primeiro a da esquerda "
+    "inteira, depois a da direita). Regras: não inclua número de página, cabeçalho ou rodapé corrido{notas}; "
+    "junte as palavras partidas por hífen no fim da linha; junte as linhas de um mesmo parágrafo; separe os "
+    "parágrafos com uma linha em branco; mantenha títulos em linhas próprias; mantenha as referências bíblicas "
+    "exatamente como aparecem. Não resuma, não corrija o estilo, não comente. Se não houver texto legível, "
+    "responda apenas: [SEM TEXTO]"
+)
+
+
+def _cliente_gemini_opcional(chave=None):
+    """Cliente do Gemini sem nunca pedir a chave (para o servidor). None se não houver chave."""
+    from google import genai
+    if chave:
+        return genai.Client(api_key=chave)
+    if os.environ.get("GEMINI_API_KEY"):
+        return genai.Client(api_key=os.environ["GEMINI_API_KEY"])
+    try:
+        from google.colab import userdata
+        k = userdata.get("GEMINI_API_KEY")
+        return genai.Client(api_key=k) if k else None
+    except Exception:
+        return None
+
+
+def _ocr_gemini(cli, caminho, remover_notas):
+    from google.genai import types
+    with open(caminho, "rb") as f:
+        dados = f.read()
+    tipo = "image/png" if caminho.lower().endswith(".png") else "image/jpeg"
+    instr = INSTRUCAO_OCR.format(notas=" nem notas de rodapé" if remover_notas else "")
+    ultimo = ""
+    for modelo in MODELOS_TEXTO_GEMINI:
+        for tentativa in range(3):
+            try:
+                r = cli.models.generate_content(model=modelo, contents=[types.Part.from_bytes(data=dados, mime_type=tipo), instr])
+                texto = (r.text or "").strip()
+                if texto:
+                    return "" if "[SEM TEXTO]" in texto else texto
+                ultimo = "resposta vazia"
+                break
+            except Exception as e:
+                ultimo = str(e)
+                if _erro_de_modelo(ultimo):
+                    break
+                if _erro_de_cota(ultimo) and not _cota_diaria(ultimo):
+                    time.sleep(20)
+                    continue
+                break
+    raise RuntimeError(ultimo[:200])
+
+
+def _ocr_tesseract(caminho):
+    """Leitura das fotos sem internet (Tesseract), quando não há chave do Gemini."""
+    if not shutil.which("tesseract"):
+        raise RuntimeError("o leitor de imagens (Tesseract) não está instalado")
+    langs = subprocess.run(["tesseract", "--list-langs"], capture_output=True, text=True).stdout.split()
+    lingua = "por" if "por" in langs else "eng"
+    r = subprocess.run(["tesseract", caminho, "stdout", "-l", lingua, "--psm", "3"], capture_output=True)
+    bruto = r.stdout.decode("utf-8", "replace")
+    paragrafos, atual = [], ""
+    for linha in bruto.splitlines():
+        linha = linha.strip()
+        if not linha:
+            if atual:
+                paragrafos.append(atual)
+            atual = ""
+            continue
+        if re.fullmatch(r"[\d\W]{1,6}", linha):      # número de página, sujeira
+            continue
+        atual = _juntar(atual, linha) if atual else linha
+    if atual:
+        paragrafos.append(atual)
+    juntos = []
+    for p in paragrafos:      # parágrafo quebrado por uma linha em branco no meio (comum no OCR)
+        if juntos and p[:1].islower() and (juntos[-1].endswith("-") or not juntos[-1].endswith(tuple('.!?:;…"”»)'))):
+            juntos[-1] = _juntar(juntos[-1], p)
+        else:
+            juntos.append(p)
+    return _resolver_hifens("\n\n".join(juntos))
+
+
+def ocr_imagens(caminhos, chave=None, remover_notas=True):
+    """Transforma fotos de páginas em texto. Devolve (texto, método usado)."""
+    cli = None
+    try:
+        cli = _cliente_gemini_opcional(chave)
+    except Exception:
+        cli = None
+    textos, metodos = [], set()
+    for k, c in enumerate(caminhos, 1):
+        print(f"   📷 lendo a foto {k}/{len(caminhos)}...")
+        texto = None
+        if cli is not None:
+            try:
+                texto = _ocr_gemini(cli, c, remover_notas)
+                metodos.add("Gemini")
+            except Exception as e:
+                print(f"   ⚠️ o Gemini não leu a foto {k} ({str(e)[:100]}); usando o leitor do servidor.")
+        if texto is None:
+            texto = _ocr_tesseract(c)
+            metodos.add("Tesseract")
+        if texto.strip():
+            textos.append(texto.strip())
+    # junta parágrafo partido entre uma foto e outra
+    final = ""
+    for t in textos:
+        if final and not final.rstrip().endswith(tuple('.!?:;…"”»)')) and t[:1].islower():
+            final = _juntar(final.rstrip(), t)
+        else:
+            final = (final + "\n\n" + t) if final else t
+    return _resolver_hifens(final), " e ".join(sorted(metodos)) or "nenhum"
+
+
 # ---------------- Edge ----------------
 async def _edge_pedaco(texto, voz, velocidade, destino):
     import edge_tts
@@ -422,40 +539,49 @@ def _piper_arquivos(voz):
     return modelo
 
 
+# O Piper roda num processo separado e de baixa prioridade: assim ele não trava o app enquanto
+# trabalha e, se faltar memória, só aquele trecho falha (com uma mensagem clara), não o servidor todo.
+_PIPER_PROCESSO = r"""
+import sys, wave
+modelo, escala, saida = sys.argv[1], float(sys.argv[2]), sys.argv[3]
+texto = sys.stdin.buffer.read().decode("utf-8")
+from piper import PiperVoice
+voz = PiperVoice.load(modelo)
+with wave.open(saida, "wb") as wf:
+    if hasattr(voz, "synthesize_wav"):
+        try:
+            from piper import SynthesisConfig
+            voz.synthesize_wav(texto, wf, syn_config=SynthesisConfig(length_scale=escala))
+        except ImportError:
+            voz.synthesize_wav(texto, wf)
+    else:
+        voz.synthesize(texto, wf, length_scale=escala)
+"""
+
+
 def _piper_carregar(voz):
-    if voz in _PIPER:
-        return _PIPER[voz]
-    modelo = _piper_arquivos(voz)
-    try:
-        from piper import PiperVoice
-        _PIPER[voz] = ("api", PiperVoice.load(modelo))
-    except ImportError:
-        _PIPER[voz] = ("cli", modelo)
+    """Garante que o modelo da voz está baixado e devolve o caminho dele."""
+    if voz not in _PIPER:
+        _PIPER[voz] = _piper_arquivos(voz)
     return _PIPER[voz]
 
 
 def _piper_pedaco(texto, voz, velocidade, destino):
     """Gera um WAV com o Piper. velocidade: -30 a +50 (%), como no Edge."""
-    import wave
-    tipo, obj = _piper_carregar(voz)
+    import sys
+    modelo = _piper_carregar(voz)
     escala = 1.0 / (1.0 + int(velocidade or 0) / 100.0)      # maior escala = fala mais devagar
-    tmp = destino + ".tmp"
-    if tipo == "api":
-        with wave.open(tmp, "wb") as wf:
-            if hasattr(obj, "synthesize_wav"):                   # piper-tts 1.3 ou mais novo
-                try:
-                    from piper import SynthesisConfig
-                    obj.synthesize_wav(texto, wf, syn_config=SynthesisConfig(length_scale=escala))
-                except ImportError:
-                    obj.synthesize_wav(texto, wf)
-            else:                                                # piper-tts 1.2
-                obj.synthesize(texto, wf, length_scale=escala)
-    else:
-        import sys
-        r = subprocess.run([sys.executable, "-m", "piper", "-m", obj, "-f", tmp], input=texto.encode("utf-8"),
-                           capture_output=True)
-        if r.returncode != 0:
-            raise RuntimeError(r.stderr.decode("utf-8", "replace")[-300:])
+    tmp = destino + ".tmp.wav"
+    cmd = [sys.executable, "-c", _PIPER_PROCESSO, modelo, f"{escala:.3f}", tmp]
+    if shutil.which("nice"):
+        cmd = ["nice", "-n", "15"] + cmd
+    env = dict(os.environ, OMP_NUM_THREADS="1", ORT_NUM_THREADS="1")
+    r = subprocess.run(cmd, input=texto.encode("utf-8"), capture_output=True, env=env, timeout=1800)
+    if r.returncode != 0 or not os.path.exists(tmp) or os.path.getsize(tmp) < 100:
+        erro = r.stderr.decode("utf-8", "replace").strip().splitlines()
+        if r.returncode in (-9, 137):
+            raise RuntimeError("o servidor ficou sem memória para a voz do Piper. Tente a voz Edge ou um trecho menor.")
+        raise RuntimeError("a voz do Piper falhou: " + (erro[-1] if erro else f"código {r.returncode}"))
     os.replace(tmp, destino)
 
 
@@ -595,7 +721,7 @@ async def gerar(capitulo="", paginas="", motor="Edge", voz_edge="pt-BR-Francisca
         except Exception as e:
             print(f"⚠️ Não consegui preparar a voz {voz_piper} do Piper ({str(e)[:200]}).")
             return None
-        limite, ext, extra = 2500, ".wav", f"piper|{voz_piper}|{int(velocidade_piper)}"
+        limite, ext, extra = 1200, ".wav", f"piper|{voz_piper}|{int(velocidade_piper)}"
     else:
         disponiveis = await vozes_edge_pt()
         if voz_edge not in disponiveis:
