@@ -712,3 +712,335 @@ def nome_seguro(s, maximo=60):
 
 def assinatura(texto, extra=""):
     return hashlib.md5((texto + "|" + extra).encode("utf-8")).hexdigest()[:12]
+
+
+# ------------------------------------------------------------
+# Documentos de texto: .docx .doc .odt .epub .rtf
+# Cada parágrafo vira um "bloco"; os títulos viram o sumário.
+# ------------------------------------------------------------
+EXT_DOCUMENTOS = (".docx", ".doc", ".odt", ".epub", ".rtf")
+
+
+def _bloco(tipo, texto, nivel=1, adivinhado=False):
+    texto = _normalizar_chars(texto or "")
+    return {"tipo": tipo, "texto": texto, "nivel": nivel, "adivinhado": adivinhado} if texto else None
+
+
+def _nivel_estilo(nome):
+    """'Heading 2', 'Título 2', 'Title' -> nível do título; None se não for título."""
+    n = _sem_acento((nome or "").lower())
+    if n in ("title", "titulo"):
+        return 0          # título do documento: acima dos capítulos
+    m = re.match(r"(heading|titulo|cabecalho)\s*(\d)", n)
+    return int(m.group(2)) if m else None
+
+
+def _ler_docx(caminho):
+    import docx
+    doc = docx.Document(caminho)
+    blocos = []
+    for p in doc.paragraphs:
+        texto = p.text
+        if not texto.strip():
+            continue
+        nivel = _nivel_estilo(p.style.name if p.style is not None else "")
+        if nivel is None:
+            try:
+                ol = p.paragraph_format.element.pPr.outlineLvl if p.paragraph_format.element.pPr is not None else None
+                nivel = int(ol.val) + 1 if ol is not None else None
+            except Exception:
+                nivel = None
+        b = _bloco("titulo" if nivel is not None else "texto", texto, nivel if nivel is not None else 1)
+        if b:
+            blocos.append(b)
+    return blocos
+
+
+def _ler_odt(caminho):
+    import zipfile
+    import xml.etree.ElementTree as ET
+    T = "{urn:oasis:names:tc:opendocument:xmlns:text:1.0}"
+    with zipfile.ZipFile(caminho) as z:
+        raiz = ET.fromstring(z.read("content.xml"))
+    ignorar = {T + "note", T + "tracked-changes", T + "table-of-content", T + "bookmark-ref"}
+
+    def texto_de(el):
+        partes = [el.text or ""]
+        for f in el:
+            if f.tag in ignorar:
+                pass
+            elif f.tag == T + "s":
+                partes.append(" " * int(f.get(T + "c", "1")))
+            elif f.tag in (T + "tab", T + "line-break"):
+                partes.append(" ")
+            else:
+                partes.append(texto_de(f))
+            partes.append(f.tail or "")
+        return "".join(partes)
+
+    blocos = []
+    def andar(el):
+        for f in el:
+            if f.tag in ignorar:
+                continue
+            if f.tag == T + "h":
+                b = _bloco("titulo", texto_de(f), int(f.get(T + "outline-level", "1") or 1))
+            elif f.tag == T + "p":
+                b = _bloco("texto", texto_de(f))
+            else:
+                andar(f)
+                continue
+            if b:
+                blocos.append(b)
+    andar(raiz)
+    return blocos
+
+
+def _ler_epub(caminho):
+    import zipfile, posixpath
+    import xml.etree.ElementTree as ET
+    from html.parser import HTMLParser
+    with zipfile.ZipFile(caminho) as z:
+        cont = ET.fromstring(z.read("META-INF/container.xml"))
+        opf = next(e.get("full-path") for e in cont.iter() if e.tag.endswith("rootfile"))
+        pacote = ET.fromstring(z.read(opf))
+        base = posixpath.dirname(opf)
+        manifesto, spine = {}, []
+        for e in pacote.iter():
+            if e.tag.endswith("}item"):
+                manifesto[e.get("id")] = (e.get("href"), e.get("properties") or "", e.get("media-type") or "")
+            elif e.tag.endswith("}itemref") and e.get("linear", "yes") != "no":
+                spine.append(e.get("idref"))
+        paginas = []
+        for idref in spine:
+            href, props, tipo = manifesto.get(idref, (None, "", ""))
+            if not href or "nav" in props.split() or "html" not in tipo:
+                continue
+            from urllib.parse import unquote
+            try:
+                paginas.append(z.read(posixpath.normpath(posixpath.join(base, unquote(href)))).decode("utf-8", "replace"))
+            except KeyError:
+                pass
+
+    BLOCOS = {"p", "li", "blockquote", "dd", "dt", "div", "section", "article", "td", "figcaption", "br"}
+    PULAR = {"script", "style", "sup", "aside", "nav", "head", "title", "rt"}
+
+    class Leitor(HTMLParser):
+        def __init__(self):
+            super().__init__(convert_charrefs=True)
+            self.blocos, self.buf, self.pular, self.tit = [], [], [], None
+        def flush(self):
+            t = "".join(self.buf)
+            self.buf = []
+            b = _bloco("titulo" if self.tit else "texto", t, self.tit or 1)
+            if b:
+                self.blocos.append(b)
+        def handle_starttag(self, tag, attrs):
+            a = dict(attrs)
+            tipo_epub = (a.get("epub:type", "") + " " + a.get("role", "") + " " + a.get("class", "")).lower()
+            if tag in PULAR or re.search(r"footnote|endnote|rearnote|noteref|doc-note|doc-endnotes|doc-footnote", tipo_epub):
+                if tag not in ("br",):
+                    self.pular.append(tag)
+                return
+            if self.pular:
+                if tag == self.pular[-1]:
+                    self.pular.append(tag)
+                return
+            if re.fullmatch(r"h[1-6]", tag):
+                self.flush()
+                self.tit = int(tag[1])
+            elif tag in BLOCOS:
+                if tag == "br":
+                    self.buf.append(" ")
+                else:
+                    self.flush()
+        def handle_endtag(self, tag):
+            if self.pular:
+                if tag == self.pular[-1]:
+                    self.pular.pop()
+                return
+            if re.fullmatch(r"h[1-6]", tag):
+                self.flush()
+                self.tit = None
+            elif tag in BLOCOS:
+                self.flush()
+        def handle_data(self, data):
+            if not self.pular:
+                self.buf.append(data)
+
+    blocos = []
+    for html in paginas:
+        L = Leitor()
+        L.feed(html)
+        L.flush()
+        blocos.extend(L.blocos)
+    return blocos
+
+
+def _rtf_para_texto(rtf):
+    """Converte RTF em texto simples (parágrafos separados por quebra de linha)."""
+    destinos = {"aftncn", "aftnsep", "aftnsepc", "annotation", "atnauthor", "atndate", "atnicn", "atnid",
+                "atnparent", "atnref", "atntime", "atrfend", "atrfstart", "author", "background", "bkmkend",
+                "bkmkstart", "buptim", "colortbl", "comment", "creatim", "do", "doccomm", "docvar", "dptxbxtext",
+                "falt", "fchars", "ffdeftext", "ffentrymcr", "ffexitmcr", "ffformat", "ffhelptext", "ffl",
+                "ffname", "ffstattext", "field", "file", "filetbl", "fldinst", "fldtype", "fname", "fontemb",
+                "fontfile", "fonttbl", "footer", "footerf", "footerl", "footerr", "footnote", "ftncn", "ftnsep",
+                "ftnsepc", "header", "headerf", "headerl", "headerr", "info", "keycode", "keywords", "lchars",
+                "levelnumbers", "leveltext", "lfolevel", "list", "listlevel", "listname", "listoverride",
+                "listoverridetable", "listpicture", "liststylename", "listtable", "listtext", "lsdlockedexcept",
+                "macc", "maccPr", "mailmerge", "maln", "malnScr", "manager", "margPr", "mbar", "mbarPr",
+                "mbaseJc", "mbegChr", "mborderBox", "mborderBoxPr", "mbox", "mboxPr", "mchr", "mcount",
+                "mctrlPr", "md", "mdeg", "mdegHide", "mden", "mdiff", "mdPr", "me", "mendChr", "meqArr",
+                "meqArrPr", "mf", "mfName", "mfPr", "mfunc", "mfuncPr", "mgroupChr", "mgroupChrPr", "mgrow",
+                "mhideBot", "mhideLeft", "mhideRight", "mhideTop", "mhtmltag", "mlim", "mlimloc", "mlimlow",
+                "mlimlowPr", "mlimupp", "mlimuppPr", "mm", "mmaddfieldname", "mmath", "mmathPict", "mmathPr",
+                "mmaxdist", "mmc", "mmcJc", "mmconnectstr", "mmconnectstrdata", "mmcPr", "mmcs",
+                "mmdatasource", "mmheadersource", "mmmailsubject", "mmodso", "mmodsofilter", "mmodsofldmpdata",
+                "mmodsomappedname", "mmodsoname", "mmodsorecipdata", "mmodsosort", "mmodsosrc", "mmodsotable",
+                "mmodsoudl", "mmodsoudldata", "mmodsouniquetag", "mmPr", "mmquery", "mmr", "mnary", "mnaryPr",
+                "mnoBreak", "mnum", "mobjDist", "moMath", "moMathPara", "moMathParaPr", "mopEmu", "mphant",
+                "mphantPr", "mplcHide", "mpos", "mr", "mrad", "mradPr", "mrPr", "msepChr", "mshow", "mshp",
+                "msPre", "msPrePr", "msSub", "msSubPr", "msSubSup", "msSubSupPr", "msSup", "msSupPr", "mstrikeBLTR",
+                "mstrikeH", "mstrikeTLBR", "mstrikeV", "msub", "msubHide", "msup", "msupHide", "mtransp",
+                "mtype", "mvertJc", "mvfmf", "mvfml", "mvtof", "mvtol", "mzeroAsc", "mzeroDesc", "mzeroWid",
+                "nesttableprops", "nextfile", "nonesttables", "objalias", "objclass", "objdata", "object",
+                "objname", "objsect", "objtime", "oldcprops", "oldpprops", "oldsprops", "oldtprops",
+                "oleclsid", "operator", "panose", "password", "passwordhash", "pgp", "pgptbl", "picprop", "pict",
+                "pn", "pnseclvl", "pntext", "pntxta", "pntxtb", "printim", "private", "propname", "protend",
+                "protstart", "protusertbl", "pxe", "result", "revtbl", "revtim", "rsidtbl", "rxe", "shp",
+                "shpgrp", "shpinst", "shppict", "shprslt", "shptxt", "sn", "sp", "staticval", "stylesheet",
+                "subject", "sv", "svb", "tc", "template", "themedata", "title", "txe", "ud", "upr", "userprops",
+                "wgrffmtfilter", "windowcaption", "writereservation", "writereservhash", "xe", "xform",
+                "xmlattrname", "xmlattrvalue", "xmlclose", "xmlname", "xmlnstbl", "xmlopen", "generator",
+                "datastore", "latentstyles"}
+    especiais = {"par": "\n", "sect": "\n\n", "page": "\n\n", "line": " ", "tab": " ", "emdash": "—",
+                 "endash": "–", "emspace": " ", "enspace": " ", "qmspace": " ", "bullet": "•", "lquote": "‘",
+                 "rquote": "’", "ldblquote": "“", "rdblquote": "”", "row": "\n", "cell": " ", "nestcell": " "}
+    padrao = re.compile(r"\\([a-z]{1,32})(-?\d{1,10})?[ ]?|\\'([0-9a-f]{2})|\\([^a-z])|([{}])|[\r\n]+|(.)", re.I | re.S)
+    pilha, ignorando, uc, pular_uc, saida = [], False, 1, 0, []
+    for m in padrao.finditer(rtf):
+        palavra, arg, hexa, char, chave, tchar = m.groups()
+        if chave:
+            pular_uc = 0
+            if chave == "{":
+                pilha.append((uc, ignorando))
+            elif chave == "}" and pilha:
+                uc, ignorando = pilha.pop()
+        elif char:
+            pular_uc = 0
+            if char == "~":
+                if not ignorando: saida.append("\xa0")
+            elif char in "{}\\":
+                if not ignorando: saida.append(char)
+            elif char == "*":
+                ignorando = True
+        elif palavra:
+            pular_uc = 0
+            if palavra in destinos:
+                ignorando = True
+            elif ignorando:
+                pass
+            elif palavra in especiais:
+                saida.append(especiais[palavra])
+            elif palavra == "uc":
+                uc = int(arg or 1)
+            elif palavra == "u":
+                c = int(arg or 0)
+                saida.append(chr(c + 65536 if c < 0 else c))
+                pular_uc = uc
+        elif hexa:
+            if pular_uc > 0:
+                pular_uc -= 1
+            elif not ignorando:
+                saida.append(bytes([int(hexa, 16)]).decode("cp1252", "replace"))
+        elif tchar:
+            if pular_uc > 0:
+                pular_uc -= 1
+            elif not ignorando:
+                saida.append(tchar)
+    return "".join(saida)
+
+
+def _blocos_de_texto_simples(texto):
+    """Para .rtf e .doc (sem estilos): cada linha é um parágrafo; linha curta sem ponto final vira título."""
+    blocos = []
+    for linha in re.split(r"\n+", texto):
+        linha = linha.strip()
+        if not linha or _eh_numero_pagina(linha):
+            continue
+        curto = len(linha) <= 90 and not linha.endswith(PONTUACAO_FINAL + (",", "-"))
+        b = _bloco("titulo" if curto else "texto", linha, 2, adivinhado=curto)
+        if b:
+            blocos.append(b)
+    return blocos
+
+
+def _ler_doc(caminho):
+    """Word antigo (.doc): converte pelo LibreOffice se houver (mantém os títulos) ou lê com o antiword."""
+    import tempfile, shutil as _sh, subprocess as _sp
+    soffice = _sh.which("soffice") or _sh.which("libreoffice")
+    if soffice:
+        pasta = tempfile.mkdtemp()
+        try:
+            _sp.run([soffice, "--headless", "--convert-to", "docx", "--outdir", pasta, caminho],
+                    capture_output=True, timeout=180)
+            convertido = os.path.join(pasta, os.path.splitext(os.path.basename(caminho))[0] + ".docx")
+            if os.path.exists(convertido):
+                return _ler_docx(convertido)
+        finally:
+            _sh.rmtree(pasta, ignore_errors=True)
+    if _sh.which("antiword"):
+        r = _sp.run(["antiword", "-w", "0", "-m", "UTF-8.txt", caminho], capture_output=True)
+        if r.returncode == 0 and r.stdout.strip():
+            return _blocos_de_texto_simples(r.stdout.decode("utf-8", "replace"))
+    raise RuntimeError("não consegui abrir este .doc. Salve-o como .docx no Word e envie de novo.")
+
+
+def ler_documento(caminho):
+    ext = os.path.splitext(caminho)[1].lower()
+    if ext == ".docx":
+        return _ler_docx(caminho)
+    if ext == ".odt":
+        return _ler_odt(caminho)
+    if ext == ".epub":
+        return _ler_epub(caminho)
+    if ext == ".rtf":
+        with open(caminho, "rb") as f:
+            bruto = f.read().decode("latin-1")
+        return _blocos_de_texto_simples(_rtf_para_texto(bruto))
+    if ext == ".doc":
+        return _ler_doc(caminho)
+    raise ValueError(f"formato não suportado: {ext}")
+
+
+class LivroDoc:
+    """Mesma interface do LivroPDF, mas cada 'página' é um parágrafo do documento."""
+    def __init__(self, caminho):
+        self.caminho = caminho
+        self.blocos = ler_documento(caminho)
+        self.n = len(self.blocos)
+
+    def tem_texto(self):
+        return any(b["texto"].strip() for b in self.blocos)
+
+    def sumario(self, detectar_se_vazio=True, progresso=None):
+        return [{"nivel": b["nivel"], "titulo": b["texto"][:120], "pagina": i}
+                for i, b in enumerate(self.blocos) if b["tipo"] == "titulo" and not b["adivinhado"]]
+
+    def extrair(self, paginas, remover_notas=True, inicio_titulo=None, fim_titulo=None):
+        paginas = [i for i in paginas if 0 <= i < self.n]
+        sel = [self.blocos[i] for i in paginas]
+        if fim_titulo and len(sel) > 1 and sel[-1]["tipo"] == "titulo":
+            sel = sel[:-1]                     # o título seguinte já é de outro capítulo
+        saida = []
+        for b in sel:
+            t = re.sub(r"\s+", " ", b["texto"]).strip()
+            if not t:
+                continue
+            if b["tipo"] == "titulo" and not t.endswith(PONTUACAO_FINAL):
+                t += "."
+            saida.append(t)
+        return "\n\n".join(saida)
+
+    def close(self):
+        pass

@@ -66,18 +66,26 @@ _CACHE_SUMARIO = {}
 def _sumario(caminho):
     if caminho in _CACHE_SUMARIO:
         return _CACHE_SUMARIO[caminho]
-    livro = nucleo.LivroPDF(caminho)
-    info = {"paginas": livro.n, "tem_texto": livro.tem_texto(), "sumario": []}
+    doc = caminho.lower().endswith(nucleo.EXT_DOCUMENTOS)
+    livro = nucleo.LivroDoc(caminho) if doc else nucleo.LivroPDF(caminho)
+    info = {"paginas": 0 if doc else livro.n, "tem_texto": livro.tem_texto(), "sumario": []}
     if info["tem_texto"]:
         itens = livro.sumario(detectar_se_vazio=livro.n <= 300)
         if itens:
             nivel_max = min(it["nivel"] for it in itens) + 1
-            info["sumario"] = [{"n": k, "titulo": it["titulo"], "pagina": it["pagina"] + 1,
+            info["sumario"] = [{"n": k, "titulo": it["titulo"], "pagina": None if doc else it["pagina"] + 1,
                                 "nivel": it["nivel"], "principal": it["nivel"] <= nivel_max}
                                for k, it in enumerate(itens, 1)]
-    livro.pdf.close()
+    if not doc:
+        livro.pdf.close()
     _CACHE_SUMARIO[caminho] = info
     return info
+
+EXTENSOES = (".pdf", ".txt") + nucleo.EXT_DOCUMENTOS
+
+def _tipo(nome):
+    n = nome.lower()
+    return "pdf" if n.endswith(".pdf") else ("txt" if n.endswith(".txt") else "doc")
 
 def _registrar_livro(caminho_tmp, nome):
     h = hashlib.md5()
@@ -96,8 +104,8 @@ def _registrar_livro(caminho_tmp, nome):
     meta = _meta_livros()
     meta[lid] = {"id": lid, "nome": nome, "caminho": destino, "quando": time.time()}
     _salvar_meta(meta)
-    info = _sumario(destino) if nome.lower().endswith(".pdf") else {"paginas": 0, "tem_texto": True, "sumario": []}
-    return {**meta[lid], **info, "tipo": "txt" if nome.lower().endswith(".txt") else "pdf"}
+    info = _sumario(destino) if not nome.lower().endswith(".txt") else {"paginas": 0, "tem_texto": True, "sumario": []}
+    return {**meta[lid], **info, "tipo": _tipo(nome)}
 
 
 # ---------------- fila de geração ----------------
@@ -260,8 +268,11 @@ async def livro(req):
     m = _meta_livros().get(lid)
     if not m or not os.path.exists(m["caminho"]):
         return JSONResponse({"erro": "Livro não encontrado. Envie o arquivo de novo."}, status_code=404)
-    info = await asyncio.to_thread(_sumario, m["caminho"]) if m["nome"].lower().endswith(".pdf") else {"sumario": [], "paginas": 0, "tem_texto": True}
-    return JSONResponse({**m, **info, "tipo": "pdf" if m["nome"].lower().endswith(".pdf") else "txt"})
+    try:
+        info = await asyncio.to_thread(_sumario, m["caminho"]) if _tipo(m["nome"]) != "txt" else {"sumario": [], "paginas": 0, "tem_texto": True}
+    except Exception as e:
+        return JSONResponse({"erro": f"Não consegui abrir esse arquivo ({str(e)[:150]})."}, status_code=400)
+    return JSONResponse({**m, **info, "tipo": _tipo(m["nome"])})
 
 @protegido
 async def enviar_livro(req):
@@ -272,8 +283,8 @@ async def enviar_livro(req):
         if arq is None or not getattr(arq, "filename", None):
             return JSONResponse({"erro": "Escolha um arquivo PDF ou TXT."}, status_code=400)
         nome = arq.filename
-        if not nome.lower().endswith((".pdf", ".txt")):
-            return JSONResponse({"erro": "Só aceito arquivos .pdf ou .txt."}, status_code=400)
+        if not nome.lower().endswith(EXTENSOES):
+            return JSONResponse({"erro": "Aceito .pdf, .docx, .doc, .odt, .epub, .rtf e .txt."}, status_code=400)
         tmp = os.path.join(PASTA_LIVROS, f".envio_{uuid.uuid4().hex}")
         with open(tmp, "wb") as f:
             while True:
@@ -309,7 +320,7 @@ async def enviar_livro(req):
     try:
         info = await asyncio.to_thread(_registrar_livro, tmp, nome)
     except Exception as e:
-        return JSONResponse({"erro": f"Não consegui abrir esse arquivo como PDF ({str(e)[:120]})."}, status_code=400)
+        return JSONResponse({"erro": f"Não consegui abrir esse arquivo ({str(e)[:150]})."}, status_code=400)
     return JSONResponse(info)
 
 @protegido

@@ -110,6 +110,20 @@ def carregar(caminho, mostrar_subtitulos=False):
             TEXTO_TXT = f.read()
         print(f"📄 Texto carregado: {len(TEXTO_TXT):,} caracteres. Vá para a etapa 3 (deixe capítulo e páginas em branco).".replace(",", "."))
         return
+    if caminho.lower().endswith(EXT_DOCUMENTOS):
+        LIVRO = LivroDoc(caminho)
+        print(f"📘 {os.path.basename(caminho)} — {LIVRO.n} parágrafos")
+        if not LIVRO.tem_texto():
+            print("⚠️ Não encontrei texto neste documento.")
+            return
+        SUMARIO = LIVRO.sumario()
+        if not SUMARIO:
+            print("Este documento não tem títulos marcados. Na etapa 3, deixe capítulo e páginas em branco para ler tudo.")
+            return
+        print("\n📑 SUMÁRIO — use o número da esquerda no campo 'capitulo' (ou deixe em branco para ler tudo):\n")
+        for k, it in enumerate(SUMARIO, 1):
+            print(f"{k:>4}. {'   ' * max(0, it['nivel'] - 1)}{it['titulo'][:80]}")
+        return
     LIVRO = LivroPDF(caminho)
     print(f"📕 {os.path.basename(caminho)} — {LIVRO.n} páginas")
     print("   (nada é formatado agora: só as páginas que você escolher na etapa 3 serão lidas e limpas)")
@@ -674,6 +688,10 @@ async def gerar(capitulo="", paginas="", motor="Edge", voz_edge="pt-BR-Francisca
         rotulo = f"paginas {pags[0] + 1}-{pags[-1] + 1}"
         print(f"📖 Páginas {pags[0] + 1} a {pags[-1] + 1}")
         texto = LIVRO.extrair(pags, remover_notas)
+    elif isinstance(LIVRO, LivroDoc):
+        rotulo = "completo"
+        print("📖 Documento inteiro")
+        texto = LIVRO.extrair(list(range(LIVRO.n)), remover_notas)
     else:
         print("⚠️ Preencha 'capitulo' (número do sumário) ou 'paginas' (ex.: 45-78).")
         return None

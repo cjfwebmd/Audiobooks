@@ -191,7 +191,7 @@ dialog pre { white-space: pre-wrap; font-family: var(--font-display); font-size:
         <div class="step"><b>1</b><h2>Livro</h2></div>
         <div class="books" id="books"></div>
         <div class="row">
-          <label class="btn file" for="arquivo">Enviar PDF<input id="arquivo" type="file" accept=".pdf,.txt,application/pdf,text/plain"></label>
+          <label class="btn file" for="arquivo">Enviar arquivo<input id="arquivo" type="file" accept=".pdf,.docx,.doc,.odt,.epub,.rtf,.txt"></label>
           <button class="btn ghost" id="mostrarLink">Colar link do Drive</button>
           <button class="btn ghost" id="mostrarFotos">Fotos de páginas</button>
         </div>
@@ -361,7 +361,7 @@ dialog pre { white-space: pre-wrap; font-family: var(--font-display); font-size:
       const b = document.createElement("button");
       b.className = "bookchip"; b.setAttribute("aria-pressed", estado.livro === l.id);
       b.innerHTML = `<span class="t"></span><span class="s"></span>`;
-      b.querySelector(".t").textContent = l.nome.replace(/\.(pdf|txt)$/i, "").replace(/_/g, " ");
+      b.querySelector(".t").textContent = l.nome.replace(/\.(pdf|txt|docx?|odt|epub|rtf)$/i, "").replace(/_/g, " ");
       b.querySelector(".s").textContent = "enviado " + new Date(l.quando * 1000).toLocaleDateString("pt-BR");
       b.onclick = () => abrirLivro(l.id);
       box.appendChild(b);
@@ -379,13 +379,20 @@ dialog pre { white-space: pre-wrap; font-family: var(--font-display); font-size:
     try {
       const info = await api("api/livros/" + id);
       estado.info = info;
-      [...$("books").children].forEach(b => b.setAttribute("aria-pressed", b.querySelector(".t").textContent === info.nome.replace(/\.(pdf|txt)$/i, "").replace(/_/g, " ")));
-      $("livroTitulo").textContent = info.nome.replace(/\.(pdf|txt)$/i, "").replace(/_/g, " ");
+      [...$("books").children].forEach(b => b.setAttribute("aria-pressed", b.querySelector(".t").textContent === info.nome.replace(/\.(pdf|txt|docx?|odt|epub|rtf)$/i, "").replace(/_/g, " ")));
+      $("livroTitulo").textContent = info.nome.replace(/\.(pdf|txt|docx?|odt|epub|rtf)$/i, "").replace(/_/g, " ");
       if (info.tipo === "txt") {
         $("livroInfo").textContent = "O áudio usa o texto inteiro abaixo.";
         $("tocBox").hidden = true; $("paginas").parentElement.hidden = true;
         $("txtBox").hidden = false; $("textoTxt").value = "Carregando…"; estado.txtSujo = false;
         api("api/livros/" + id + "/texto").then(r => { $("textoTxt").value = r.texto; }).catch(() => { $("textoTxt").value = ""; });
+      } else if (info.tipo === "doc") {
+        $("paginas").parentElement.hidden = true;
+        $("livroInfo").textContent = info.sumario.length
+          ? "Toque no capítulo que quer ouvir, ou não escolha nenhum para ler o documento inteiro."
+          : "Este documento não tem títulos marcados: o áudio usa o documento inteiro.";
+        $("tocBox").hidden = !info.sumario.length;
+        if (info.sumario.length) desenharToc();
       } else if (!info.tem_texto) {
         $("livroInfo").textContent = "Este PDF é só imagem (digitalizado) e precisa de OCR antes. Não dá para ler o texto dele.";
         $("tocBox").hidden = true; $("paginas").parentElement.hidden = true;
@@ -409,7 +416,7 @@ dialog pre { white-space: pre-wrap; font-family: var(--font-display); font-size:
       const bt = document.createElement("button");
       const dentro = a && (b ? it.n >= Math.min(a, b) && it.n <= Math.max(a, b) && it.principal : it.n === a);
       bt.setAttribute("aria-pressed", !!(dentro || it.n === a || it.n === b));
-      bt.innerHTML = `<span></span><span class="pg">p. ${it.pagina}</span>`;
+      bt.innerHTML = `<span></span><span class="pg">${it.pagina ? "p. " + it.pagina : ""}</span>`;
       bt.firstChild.textContent = it.titulo;
       bt.onclick = () => {
         $("paginas").value = "";
@@ -431,6 +438,7 @@ dialog pre { white-space: pre-wrap; font-family: var(--font-display); font-size:
     const t = n => info.sumario.find(x => x.n === n)?.titulo || n;
     if (estado.sel.length === 1) return t(estado.sel[0]);
     if (estado.sel.length === 2) return t(estado.sel[0]) + " até " + t(estado.sel[1]);
+    if (info.tipo === "doc") return "Documento inteiro";
     return "";
   }
   function atualizarEscolha() {
@@ -560,10 +568,11 @@ dialog pre { white-space: pre-wrap; font-family: var(--font-display); font-size:
     const info = estado.info;
     if (!info) return;
     let capitulo = "";
-    if (info.tipo !== "txt" && !$("paginas").value.trim()) {
+    if (info.tipo === "pdf" && !$("paginas").value.trim()) {
       if (!estado.sel.length) { $("gerarErr").textContent = "Escolha um capítulo ou escreva as páginas."; $("gerarErr").hidden = false; return; }
       capitulo = estado.sel.length === 2 ? `${estado.sel[0]}-${estado.sel[1]}` : String(estado.sel[0]);
     }
+    if (info.tipo === "doc" && estado.sel.length) capitulo = estado.sel.length === 2 ? `${estado.sel[0]}-${estado.sel[1]}` : String(estado.sel[0]);
     if (info.tipo === "txt" && estado.txtSujo) {
       try { await api("api/livros/" + estado.livro + "/texto", { method: "PUT", headers: { "content-type": "application/json" }, body: JSON.stringify({ texto: $("textoTxt").value }) }); estado.txtSujo = false; }
       catch (e) { $("gerarErr").textContent = "Não consegui salvar as correções do texto: " + e.message; $("gerarErr").hidden = false; return; }
@@ -618,7 +627,7 @@ dialog pre { white-space: pre-wrap; font-family: var(--font-display); font-size:
         ${t.estado === "erro" ? `<div class="msg err"></div>` : ""}
         <div class="acts"></div>`;
       c.querySelector("h2").textContent = t.rotulo;
-      c.querySelector(".livro").textContent = t.livro.replace(/\.(pdf|txt)$/i, "").replace(/_/g, " ");
+      c.querySelector(".livro").textContent = t.livro.replace(/\.(pdf|txt|docx?|odt|epub|rtf)$/i, "").replace(/_/g, " ");
       if (t.estado === "gerando") {
         const reg = (t.registro || []).filter(l => !/^[│─]/.test(l));
         c.querySelector(".log").textContent = (pct ? `${pct}%` + (t.restante ? ` · falta ${fmtMin(t.restante)}` : "") + " · " : "") + (reg[reg.length - 1] || "começando…");
